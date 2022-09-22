@@ -22,7 +22,6 @@
 #ifndef SRSRAN_RRC_UTILS_H
 #define SRSRAN_RRC_UTILS_H
 
-#include "srsenb/hdr/stack/mac/sched_interface.h"
 #include "srsran/interfaces/mac_interface_types.h"
 #include "srsran/interfaces/pdcp_interface_types.h"
 #include "srsran/interfaces/rlc_interface_types.h"
@@ -115,8 +114,6 @@ void set_mac_cfg_t_sched_request_cfg(mac_cfg_t* cfg, const asn1::rrc::sched_requ
 void set_mac_cfg_t_main_cfg(mac_cfg_t* cfg, const asn1::rrc::mac_main_cfg_s& asn1_type);
 void set_mac_cfg_t_rach_cfg_common(mac_cfg_t* cfg, const asn1::rrc::rach_cfg_common_s& asn1_type);
 void set_mac_cfg_t_time_alignment(mac_cfg_t* cfg, const asn1::rrc::time_align_timer_opts asn1_type);
-
-srsenb::sched_interface::ant_info_ded_t make_ant_info_ded(const asn1::rrc::ant_info_ded_s& asn1_type);
 
 /***************************
  *      PHY Config

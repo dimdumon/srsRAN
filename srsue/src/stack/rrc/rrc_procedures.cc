@@ -842,6 +842,8 @@ proc_outcome_t rrc::connection_request_proc::step()
       return proc_outcome_t::error;
     }
 
+    rrc_ptr->t300.set(9999999);
+
     rrc_ptr->t300.run();
 
     // Send connectionRequest message to lower layers

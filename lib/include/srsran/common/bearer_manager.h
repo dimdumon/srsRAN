@@ -22,7 +22,6 @@
 #ifndef SRSRAN_BEARER_MANAGER_H
 #define SRSRAN_BEARER_MANAGER_H
 
-#include "srsenb/hdr/common/common_enb.h"
 #include "srsran/common/common.h"
 #include "srsran/common/rwlock_guard.h"
 #include "srsran/srslog/srslog.h"
@@ -139,30 +138,5 @@ private:
 };
 
 } // namespace srsue
-
-namespace srsenb {
-
-class enb_bearer_manager
-{
-public:
-  using radio_bearer_t = srsran::detail::ue_bearer_manager_impl::radio_bearer_t;
-
-  enb_bearer_manager();
-
-  /// Multi-user interface (see comments above)
-  void           add_eps_bearer(uint16_t rnti, uint8_t eps_bearer_id, srsran::srsran_rat_t rat, uint32_t lcid);
-  void           remove_eps_bearer(uint16_t rnti, uint8_t eps_bearer_id);
-  void           rem_user(uint16_t rnti);
-  bool           has_active_radio_bearer(uint16_t rnti, uint32_t eps_bearer_id);
-  radio_bearer_t get_radio_bearer(uint16_t rnti, uint32_t eps_bearer_id);
-  radio_bearer_t get_lcid_bearer(uint16_t rnti, uint32_t lcid);
-
-private:
-  srslog::basic_logger& logger;
-
-  std::unordered_map<uint16_t, srsran::detail::ue_bearer_manager_impl> users_map;
-};
-
-} // namespace srsenb
 
 #endif // SRSRAN_BEARER_MANAGER_H

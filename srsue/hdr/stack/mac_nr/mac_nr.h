@@ -51,7 +51,7 @@ class mac_nr final : public mac_interface_phy_nr,
                      public mac_interface_harq_nr
 {
 public:
-  mac_nr(srsran::ext_task_sched_handle task_sched_);
+  mac_nr(const char* logname, srsran::ext_task_sched_handle task_sched_);
   ~mac_nr();
 
   int  init(const mac_nr_args_t& args_, phy_interface_mac_nr* phy_, rlc_interface_mac* rlc_, rrc_interface_mac* rrc_);

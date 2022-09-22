@@ -164,4 +164,6 @@ SRSRAN_API bool srsran_ue_ul_info(srsran_ue_ul_cfg_t* cfg,
                                   char*               str,
                                   uint32_t            str_len);
 
+SRSRAN_API void zero_output_buffer(srsran_ue_ul_t* q);
+
 #endif // SRSRAN_UE_UL_H

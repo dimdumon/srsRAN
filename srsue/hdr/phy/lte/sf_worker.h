@@ -56,7 +56,7 @@ public:
   void     set_cfo_nolock(const uint32_t& cc_idx, float cfo);
 
   void set_tdd_config_nolock(srsran_tdd_config_t config);
-  void set_config_nolock(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg);
+  void set_config_nolock(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg, int stack_idx);
 
   ///< Methods for plotting called from GUI thread
   int      read_ce_abs(float* ce_abs, uint32_t tx_antenna, uint32_t rx_antenna);

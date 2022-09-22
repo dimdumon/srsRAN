@@ -115,6 +115,7 @@ private:
   rf_timestamp_t    end_of_burst_time = {};
   std::atomic<bool> is_start_of_burst{false};
   uint32_t          tx_adv_nsamples    = 0;
+  double            tx_adv_ta_usec     = 0.0; // Static value to compensate for the timing advance
   double            tx_adv_sec         = 0.0; // Transmission time advance to compensate for antenna->timestamp delay
   bool              tx_adv_auto        = false;
   bool              tx_adv_negative    = false;

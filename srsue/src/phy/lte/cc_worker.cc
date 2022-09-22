@@ -55,6 +55,7 @@ cc_worker::cc_worker(uint32_t cc_idx_, uint32_t max_prb, srsue::phy_common* phy_
 {
   cc_idx = cc_idx_;
   phy    = phy_;
+  nof_sim_ues = phy->args->nof_sim_ues;
 
   signal_buffer_max_samples = 3 * SRSRAN_SF_LEN_PRB(max_prb);
 
@@ -82,7 +83,10 @@ cc_worker::cc_worker(uint32_t cc_idx_, uint32_t max_prb, srsue::phy_common* phy_
   }
 
   phy->set_ue_dl_cfg(&ue_dl_cfg);
-  phy->set_ue_ul_cfg(&ue_ul_cfg);
+  for (int i = 0; i < nof_sim_ues; i++) {
+    phy->set_ue_ul_cfg(&ue_ul_cfg[i]);
+  }
+  
   phy->set_pdsch_cfg(&ue_dl_cfg.cfg.pdsch);
   phy->set_pdsch_cfg(&pmch_cfg.pdsch_cfg); // set same config in PMCH decoder
 
@@ -121,7 +125,10 @@ void cc_worker::reset()
 {
   // constructor sets defaults
   srsran::phy_cfg_t empty_cfg;
-  set_config_nolock(empty_cfg);
+  for (int i = 0; i < nof_sim_ues; i++) {
+    set_config_nolock(empty_cfg, i);
+  }
+  
 }
 
 void cc_worker::reset_cell_nolock()
@@ -182,7 +189,8 @@ void cc_worker::set_tti(uint32_t tti)
 
 void cc_worker::set_cfo_nolock(float cfo)
 {
-  ue_ul_cfg.cfo_value = cfo;
+  for (int stack_idx = 0; stack_idx < nof_sim_ues; stack_idx++)
+    ue_ul_cfg[stack_idx].cfo_value = cfo;
 }
 
 float cc_worker::get_ref_cfo() const
@@ -247,113 +255,68 @@ bool cc_worker::work_dl_regular()
     // Look for DL and UL dci(s) if the serving cell is active and it is NOT a secondary serving cell without
     // cross-carrier scheduling is enabled
     if (phy->cell_state.is_active(cc_idx, sf_cfg_dl.tti) and (cc_idx != 0 or not ue_dl_cfg.cfg.dci.cif_present)) {
+      set_rnti_mapping();
       found_dl_grant = decode_pdcch_dl() > 0;
-      decode_pdcch_ul();
     }
   }
 
-  srsran_dci_dl_t dci_dl       = {};
-  uint32_t        grant_cc_idx = 0;
-  bool            has_dl_grant = phy->get_dl_pending_grant(CURRENT_TTI, cc_idx, &grant_cc_idx, &dci_dl);
+  int ra_rnti_counter[11] = {0};
 
-  // If found a dci for this carrier, generate a grant, pass it to MAC and decode the associated PDSCH
-  if (has_dl_grant) {
-    // Read last TB from last retx for this pid
-    for (uint32_t i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
-      ue_dl_cfg.cfg.pdsch.grant.last_tbs[i] = phy->last_dl_tbs[dci_dl.pid][cc_idx][i];
-    }
-    // Generate PHY grant
-    if (srsran_ue_dl_dci_to_pdsch_grant(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, &dci_dl, &ue_dl_cfg.cfg.pdsch.grant)) {
-      Info("Converting DCI message to DL dci");
-      return false;
-    }
+  for (size_t i = 0; i < phy->stacks->size(); i++) {
 
-    // Save TB for next retx
-    for (uint32_t i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
-      phy->last_dl_tbs[dci_dl.pid][cc_idx][i] = ue_dl_cfg.cfg.pdsch.grant.last_tbs[i];
-    }
+    srsran_dci_dl_t dci_dl       = {};
+    uint32_t        grant_cc_idx = 0;
+    bool            has_dl_grant = phy->get_dl_pending_grant(CURRENT_TTI, cc_idx, &grant_cc_idx, &dci_dl, i);
 
-    // Set RNTI
-    ue_dl_cfg.cfg.pdsch.rnti = dci_dl.rnti;
+    // If found a dci for this carrier, generate a grant, pass it to MAC and decode the associated PDSCH
+    if (has_dl_grant) {
+      // Read last TB from last retx for this pid
+      for (uint32_t j = 0; j < SRSRAN_MAX_CODEWORDS; j++) {
+        ue_dl_cfg.cfg.pdsch.grant.last_tbs[j] = phy->last_dl_tbs[dci_dl.pid][cc_idx][j][i];
+      }
+      // Generate PHY grant
+      if (srsran_ue_dl_dci_to_pdsch_grant(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, &dci_dl, &ue_dl_cfg.cfg.pdsch.grant)) {
+        Info("Converting DCI message to DL dci");
+        return false;
+      }
 
-    // Generate MAC grant
-    mac_interface_phy_lte::mac_grant_dl_t mac_grant = {};
-    dl_phy_to_mac_grant(&ue_dl_cfg.cfg.pdsch.grant, &dci_dl, &mac_grant);
+      // Save TB for next retx
+      for (uint32_t j = 0; j < SRSRAN_MAX_CODEWORDS; j++) {
+        phy->last_dl_tbs[dci_dl.pid][cc_idx][j][i] = ue_dl_cfg.cfg.pdsch.grant.last_tbs[j];
+      }
 
-    // Save ACK resource configuration
-    srsran_pdsch_ack_resource_t ack_resource = {dci_dl.dai, dci_dl.location.ncce, grant_cc_idx, dci_dl.tpc_pucch};
+      // Set RNTI
+      ue_dl_cfg.cfg.pdsch.rnti = dci_dl.rnti;
 
-    // Send grant to MAC and get action for this TB, then call tb_decoded to unlock MAC
-    phy->stack->new_grant_dl(cc_idx, mac_grant, &dl_action);
+      // Generate MAC grant
+      mac_interface_phy_lte::mac_grant_dl_t mac_grant = {};
+      dl_phy_to_mac_grant(&ue_dl_cfg.cfg.pdsch.grant, &dci_dl, &mac_grant);
 
-    // Decode PDSCH
-    decode_pdsch(ack_resource, &dl_action, dl_ack);
+      // Save ACK resource configuration
+      srsran_pdsch_ack_resource_t ack_resource = {dci_dl.dai, dci_dl.location.ncce, grant_cc_idx, dci_dl.tpc_pucch};
 
-    // Informs Stack about the decoding status, send NACK if cell is in process of re-selection
-    if (phy->cell_is_selecting) {
-      for (uint32_t i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
-        dl_ack[i] = false;
+      // Send grant to MAC and get action for this TB, then call tb_decoded to unlock MAC
+      phy->stacks->at(i)->new_grant_dl(cc_idx, mac_grant, &dl_action);
+
+      // Decode PDSCH
+      decode_pdsch(ack_resource, &dl_action, dl_ack);
+
+      // Informs Stack about the decoding status, send NACK if cell is in process of re-selection
+      if (phy->cell_is_selecting) {
+        for (uint32_t i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
+          dl_ack[i] = false;
+        }
+      }
+
+      if (SRSRAN_RNTI_ISRAR(mac_grant.rnti)) {
+        if (ra_rnti_counter[mac_grant.rnti] == 0) printf("Available stacks: %d, of which %d stacks listen for RAR; %d stacks following a user\n", unassigned_stacks, rar_stacks, crnti_stacks);
+        ra_rnti_counter[mac_grant.rnti]++;
+        phy->stacks->at(i)->tb_decoded(cc_idx, mac_grant, dl_ack, ra_rnti_counter[mac_grant.rnti]);
+      } else {
+        phy->stacks->at(i)->tb_decoded(cc_idx, mac_grant, dl_ack, 0);
       }
     }
-    phy->stack->tb_decoded(cc_idx, mac_grant, dl_ack);
   }
-
-  /* Decode PHICH */
-  decode_phich();
-
-  return true;
-}
-
-bool cc_worker::work_dl_mbsfn(srsran_mbsfn_cfg_t mbsfn_cfg)
-{
-  mac_interface_phy_lte::tb_action_dl_t dl_action = {};
-
-  if (!cell_initiated) {
-    logger.warning("Trying to access cc_worker=%d while cell not initialized (MBSFN)", cc_idx);
-    return false;
-  }
-
-  // Configure MBSFN settings
-  srsran_ue_dl_set_mbsfn_area_id(&ue_dl, mbsfn_cfg.mbsfn_area_id);
-  srsran_ue_dl_set_non_mbsfn_region(&ue_dl, mbsfn_cfg.non_mbsfn_region_length);
-
-  sf_cfg_dl.sf_type = SRSRAN_SF_MBSFN;
-
-  // Set MBSFN channel estimation
-  chest_mbsfn_cfg.mbsfn_area_id = mbsfn_cfg.mbsfn_area_id;
-  ue_dl_cfg.chest_cfg           = chest_mbsfn_cfg;
-
-  /* Do FFT and extract PDCCH LLR, or quit if no actions are required in this subframe */
-  if (srsran_ue_dl_decode_fft_estimate(&ue_dl, &sf_cfg_dl, &ue_dl_cfg) < 0) {
-    Error("Getting PDCCH FFT estimate");
-    return false;
-  }
-
-  // Look for DL and UL dci(s) if the serving cell is active and it is NOT a secondary serving cell without
-  // cross-carrier scheduling is enabled
-  if (phy->cell_state.is_active(cc_idx, sf_cfg_dl.tti) and (cc_idx != 0 or not ue_dl_cfg.cfg.dci.cif_present)) {
-    decode_pdcch_dl();
-    decode_pdcch_ul();
-  }
-
-  if (mbsfn_cfg.enable) {
-    srsran_configure_pmch(&pmch_cfg, &cell, &mbsfn_cfg);
-    srsran_ra_dl_compute_nof_re(&cell, &sf_cfg_dl, &pmch_cfg.pdsch_cfg.grant);
-
-    // Send grant to MAC and get action for this TB, then call tb_decoded to unlock MAC
-    phy->stack->new_mch_dl(pmch_cfg.pdsch_cfg.grant, &dl_action);
-    bool mch_decoded = true;
-    if (!decode_pmch(&dl_action, &mbsfn_cfg)) {
-      mch_decoded = false;
-    }
-    phy->stack->mch_decoded((uint32_t)pmch_cfg.pdsch_cfg.grant.tb[0].tbs / 8, mch_decoded);
-  } else if (mbsfn_cfg.is_mcch) {
-    // release lock in phy_common
-    phy->set_mch_period_stop(0);
-  }
-
-  /* Decode PHICH */
-  decode_phich();
 
   return true;
 }
@@ -380,44 +343,106 @@ void cc_worker::dl_phy_to_mac_grant(srsran_pdsch_grant_t*                       
   }
 }
 
+void cc_worker::set_rnti_mapping()
+{
+  rnti_mapping.clear();
+  dl_rntis.clear();
+  unassigned_stacks = 0;
+  rar_stacks = 0;
+  crnti_stacks = 0;
+
+  for (size_t i = 0; i < phy->stacks->size(); i++) {
+    uint16_t dl_rnti = phy->stacks->at(i)->get_dl_sched_rnti(CURRENT_TTI);
+    if (dl_rnti == SRSRAN_INVALID_RNTI) continue;
+
+    if (SRSRAN_RNTI_ISSI(dl_rnti)) {
+      unassigned_stacks++;
+    } else if (SRSRAN_RNTI_ISRAR(dl_rnti)) {
+      unassigned_stacks++;
+      rar_stacks++;
+    } else if (SRSRAN_RNTI_ISUSER(dl_rnti)) {
+      crnti_stacks++;
+    }
+
+    if (rnti_mapping.find(dl_rnti) != rnti_mapping.end()) {
+      rnti_mapping[dl_rnti].push_back(i);
+    } else {
+      rnti_mapping[dl_rnti] = std::vector<int>();
+      rnti_mapping[dl_rnti].push_back(i);
+      dl_rntis.push_back(dl_rnti);
+    }
+  }
+
+  Debug("There is currently %d unassigned stacks and %d out of them are in rar; %d crnti stacks", unassigned_stacks, rar_stacks, crnti_stacks);
+}
+
 int cc_worker::decode_pdcch_dl()
 {
-  int nof_grants = 0;
+  int* nof_grants;
 
-  uint16_t dl_rnti = phy->stack->get_dl_sched_rnti(CURRENT_TTI);
-  if (dl_rnti != SRSRAN_INVALID_RNTI) {
-    srsran_dci_dl_t dci[SRSRAN_MAX_CARRIERS] = {};
+  int nof_grants_arr[dl_rntis.size()] = {};
+  nof_grants = nof_grants_arr;
+
+  int found_dl_grant = 0;
+  int dl_dci_counter = 0;
+
+  if (!dl_rntis.empty()) {
+    srsran_dci_dl_t dci_arr[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG];
+
+    Debug("PDCCH looking for rntis=");
+    for (uint16_t rnti : dl_rntis) {
+      Debug("0x%x ", rnti);
+    }
+
+    uint16_t dl_rntis_size = dl_rntis.size();
+    uint16_t dl_rntis_arr[dl_rntis_size];
+    std::copy(dl_rntis.begin(), dl_rntis.end(), dl_rntis_arr);
 
     /* Blind search first without cross scheduling then with it if enabled */
-    for (int i = 0; i < (ue_dl_cfg.cfg.dci.cif_present ? 2 : 1) && !nof_grants; i++) {
-      Debug("PDCCH looking for rnti=0x%x", dl_rnti);
-      ue_dl_cfg.cfg.dci.cif_enabled = i > 0;
-      ue_dl_cfg.cfg.dci_common_ss   = (cc_idx == 0);
-      nof_grants                    = srsran_ue_dl_find_dl_dci(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, dl_rnti, dci);
-      if (nof_grants < 0) {
-        Error("Looking for DL grants");
-        return -1;
+    // todo cross scheduling - right now I have removed it
+    ue_dl_cfg.cfg.dci.cif_enabled = false;
+    ue_dl_cfg.cfg.dci_common_ss   = (cc_idx == 0);
+    nof_grants                    = srsran_ue_dl_find_dl_dcis(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, dl_rntis_arr, dl_rntis_size, dci_arr);
+    if (nof_grants[0] < 0) {
+      Error("Looking for DL grants");
+      return -1;
+    }
+
+    for (size_t i = 0; i < dl_rntis.size(); i++)
+    {
+      if (nof_grants[i]) found_dl_grant = 1;
+
+      // If RAR dci, save TTI
+      if (nof_grants[i] > 0 && SRSRAN_RNTI_ISRAR(dl_rntis[i])) {
+        Debug("setting rar grant %d", CURRENT_TTI);
+        phy->set_rar_grant_tti(CURRENT_TTI);
       }
-    }
 
-    // If RAR dci, save TTI
-    if (nof_grants > 0 && SRSRAN_RNTI_ISRAR(dl_rnti)) {
-      phy->set_rar_grant_tti(CURRENT_TTI);
-    }
+      for (int k = 0; k < nof_grants[i]; k++) {
+        // Save dci to CC index
+        if (SRSRAN_RNTI_ISSIRAPA(dci_arr[i][k].rnti)) {
+          for (int stack_idx : rnti_mapping[dci_arr[i][k].rnti]) {
+            phy->set_dl_pending_grant(CURRENT_TTI, dci_arr[i][k].cif_present ? dci_arr[i][k].cif : cc_idx, cc_idx, &dci_arr[i][k], dl_dci_counter, stack_idx);
+            dl_dci_counter++;
+          }
+        } else {
+          phy->set_dl_pending_grant(CURRENT_TTI, dci_arr[i][k].cif_present ? dci_arr[i][k].cif : cc_idx, cc_idx, &dci_arr[i][k], dl_dci_counter, rnti_mapping[dci_arr[i][k].rnti][0]);
+          dl_dci_counter++;
+        }
 
-    for (int k = 0; k < nof_grants; k++) {
-      // Save dci to CC index
-      phy->set_dl_pending_grant(CURRENT_TTI, dci[k].cif_present ? dci[k].cif : cc_idx, cc_idx, &dci[k]);
-
-      // Logging
-      if (logger.info.enabled()) {
-        char str[512];
-        srsran_dci_dl_info(&dci[k], str, 512);
-        logger.info("PDCCH: cc=%d, %s, snr=%.1f dB", cc_idx, str, ue_dl.chest_res.snr_db);
+        // Logging
+        if (logger.info.enabled()) {
+          char str[512];
+          srsran_dci_dl_info(&dci_arr[i][k], str, 512);
+          logger.info("PDCCH: cc=%d, %s, snr=%.1f dB, rnti=0x%x", cc_idx, str, ue_dl.chest_res.snr_db, dci_arr[i][k].rnti);
+        }
       }
     }
   }
-  return nof_grants;
+
+  if (nof_grants != nof_grants_arr) free(nof_grants);
+
+  return found_dl_grant;
 }
 
 int cc_worker::decode_pdsch(srsran_pdsch_ack_resource_t            ack_resource,
@@ -537,30 +562,6 @@ int cc_worker::decode_pmch(mac_interface_phy_lte::tb_action_dl_t* action, srsran
   return 0;
 }
 
-void cc_worker::decode_phich()
-{
-  srsran_dci_ul_t      dci_ul      = {};
-  srsran_phich_grant_t phich_grant = {};
-  srsran_phich_res_t   phich_res   = {};
-
-  // Receive PHICH, in TDD might be more than one
-  for (uint32_t I_phich = 0; I_phich < 2; I_phich++) {
-    phich_grant.I_phich = I_phich;
-    if (phy->get_ul_pending_ack(&sf_cfg_dl, cc_idx, &phich_grant, &dci_ul)) {
-      if (srsran_ue_dl_decode_phich(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, &phich_grant, &phich_res)) {
-        Error("Decoding PHICH");
-      }
-      phy->set_ul_received_ack(&sf_cfg_dl, cc_idx, phich_res.ack_value, I_phich, &dci_ul);
-      Info("PHICH: hi=%d, corr=%.1f, I_lowest=%d, n_dmrs=%d, I_phich=%d",
-           phich_res.ack_value,
-           phich_res.distance,
-           phich_grant.n_prb_lowest,
-           phich_grant.n_dmrs,
-           I_phich);
-    }
-  }
-}
-
 void cc_worker::update_measurements(std::vector<phy_meas_t>& serving_cells, cf_t* rssi_power_buffer)
 {
   // Do not update any measurement if the CC is not configured to prevent false or inaccurate data
@@ -572,117 +573,15 @@ void cc_worker::update_measurements(std::vector<phy_meas_t>& serving_cells, cf_t
       cc_idx, ue_dl.chest_res, sf_cfg_dl, ue_dl_cfg.cfg.pdsch.rs_power, serving_cells, rssi_power_buffer);
 }
 
-/************
- *
- * Uplink Functions
- *
- */
-
-bool cc_worker::work_ul(srsran_uci_data_t* uci_data)
-{
-  bool signal_ready;
-
-  srsran_dci_ul_t                       dci_ul       = {};
-  mac_interface_phy_lte::mac_grant_ul_t ul_mac_grant = {};
-  mac_interface_phy_lte::tb_action_ul_t ul_action    = {};
-  uint32_t                              pid          = 0;
-
-  if (!cell_initiated) {
-    logger.warning("Trying to access cc_worker=%d while cell not initialized (UL)", cc_idx);
-    return false;
-  }
-
-  bool ul_grant_available = phy->get_ul_pending_grant(&sf_cfg_ul, cc_idx, &pid, &dci_ul);
-  ul_mac_grant.phich_available =
-      phy->get_ul_received_ack(&sf_cfg_ul, cc_idx, &ul_mac_grant.hi_value, ul_grant_available ? nullptr : &dci_ul);
-
-  // If there is no grant, pid is from current TX TTI
-  if (!ul_grant_available) {
-    pid = phy->ul_pidof(CURRENT_TTI_TX, &sf_cfg_ul.tdd_config);
-  }
-
-  /*
-   * Generate aperiodic CQI report if required, note that in case both aperiodic and periodic ones present, only
-   * aperiodic is sent (36.213 section 7.2)
-   */
-  if (ul_grant_available and dci_ul.cqi_request and uci_data != nullptr) {
-    set_uci_aperiodic_cqi(uci_data);
-  }
-
-  /* Send UL dci or HARQ information (from PHICH) to MAC and receive actions*/
-  if (ul_grant_available || ul_mac_grant.phich_available) {
-    // Read last TB info from last retx for this PID
-    ue_ul_cfg.ul_cfg.pusch.grant.last_tb = phy->last_ul_tb[pid][cc_idx];
-
-    // Generate PHY grant
-    if (srsran_ue_ul_dci_to_pusch_grant(&ue_ul, &sf_cfg_ul, &ue_ul_cfg, &dci_ul, &ue_ul_cfg.ul_cfg.pusch.grant)) {
-      if (logger.info.enabled()) {
-        char str[128];
-        srsran_dci_ul_info(&dci_ul, str, sizeof(str));
-        Info("Converting DCI message to UL grant %s", str);
-      }
-      ul_grant_available = false;
-    } else if (ue_ul_cfg.ul_cfg.pusch.grant.tb.mod == SRSRAN_MOD_BPSK) {
-      Error("UL retransmission without valid stored grant.");
-      ul_grant_available = false;
-    } else {
-      // Save TBS info for next retx
-      phy->last_ul_tb[pid][cc_idx] = ue_ul_cfg.ul_cfg.pusch.grant.tb;
-
-      // Fill MAC dci
-      ul_phy_to_mac_grant(&ue_ul_cfg.ul_cfg.pusch.grant, &dci_ul, pid, ul_grant_available, &ul_mac_grant);
-
-      phy->stack->new_grant_ul(cc_idx, ul_mac_grant, &ul_action);
-
-      // Calculate PUSCH Hopping procedure
-      ue_ul_cfg.ul_cfg.hopping.current_tx_nb = ul_action.current_tx_nb;
-      srsran_ue_ul_pusch_hopping(&ue_ul, &sf_cfg_ul, &ue_ul_cfg, &ue_ul_cfg.ul_cfg.pusch.grant);
-    }
-  }
-
-  // Set UL RNTI
-  if (ul_grant_available || ul_mac_grant.phich_available) {
-    ue_ul_cfg.ul_cfg.pusch.rnti = dci_ul.rnti;
-  } else {
-    ue_ul_cfg.ul_cfg.pucch.rnti = phy->stack->get_ul_sched_rnti(CURRENT_TTI_TX);
-  }
-
-  // PCell sends SR and ACK
-  if (uci_data != nullptr) {
-    set_uci_sr(uci_data);
-    // This must be called after set_uci_sr() and set_uci_*_cqi
-    set_uci_ack(uci_data, ul_grant_available, dci_ul.dai, ul_action.tb.enabled);
-  }
-
-  // Generate uplink signal, include uci data on only PCell
-  signal_ready = encode_uplink(&ul_action, uci_data);
-
-  // Prepare to receive ACK through PHICH
-  if (ul_action.expect_ack) {
-    srsran_phich_grant_t phich_grant = {};
-    phich_grant.I_phich              = 0;
-    if (cell.frame_type == SRSRAN_TDD && sf_cfg_ul.tdd_config.sf_config == 0) {
-      if ((sf_cfg_ul.tti % 10) == 4 || (sf_cfg_ul.tti % 10) == 9) {
-        phich_grant.I_phich = 1;
-      }
-    }
-    phich_grant.n_prb_lowest = ue_ul_cfg.ul_cfg.pusch.grant.n_prb_tilde[0];
-    phich_grant.n_dmrs       = ue_ul_cfg.ul_cfg.pusch.grant.n_dmrs;
-
-    phy->set_ul_pending_ack(&sf_cfg_ul, cc_idx, phich_grant, &dci_ul);
-  }
-
-  return signal_ready;
-}
-
 void cc_worker::ul_phy_to_mac_grant(srsran_pusch_grant_t*                         phy_grant,
                                     srsran_dci_ul_t*                              dci_ul,
                                     uint32_t                                      pid,
                                     bool                                          ul_grant_available,
-                                    srsue::mac_interface_phy_lte::mac_grant_ul_t* mac_grant)
+                                    srsue::mac_interface_phy_lte::mac_grant_ul_t* mac_grant,
+                                    int                                           stack_idx)
 {
   if (mac_grant->phich_available && !dci_ul->rnti) {
-    mac_grant->rnti = phy->stack->get_ul_sched_rnti(CURRENT_TTI);
+    mac_grant->rnti = phy->stacks->at(stack_idx)->get_ul_sched_rnti(CURRENT_TTI);
   } else {
     mac_grant->rnti = dci_ul->rnti;
   }
@@ -695,186 +594,6 @@ void cc_worker::ul_phy_to_mac_grant(srsran_pusch_grant_t*                       
   mac_grant->tti_tx         = CURRENT_TTI_TX;
 }
 
-int cc_worker::decode_pdcch_ul()
-{
-  int nof_grants = 0;
-
-  srsran_dci_ul_t dci[SRSRAN_MAX_CARRIERS];
-  ZERO_OBJECT(dci);
-
-  uint16_t ul_rnti = phy->stack->get_ul_sched_rnti(CURRENT_TTI);
-
-  if (ul_rnti) {
-    /* Blind search first without cross scheduling then with it if enabled */
-    for (int i = 0; i < (ue_dl_cfg.cfg.dci.cif_present ? 2 : 1) && !nof_grants; i++) {
-      ue_dl_cfg.cfg.dci.cif_enabled = i > 0;
-      ue_dl_cfg.cfg.dci_common_ss   = (cc_idx == 0);
-      nof_grants                    = srsran_ue_dl_find_ul_dci(&ue_dl, &sf_cfg_dl, &ue_dl_cfg, ul_rnti, dci);
-      if (nof_grants < 0) {
-        Error("Looking for UL grants");
-        return -1;
-      }
-    }
-
-    /* Convert every DCI message to UL dci */
-    for (int k = 0; k < nof_grants; k++) {
-      // If the DCI does not have Carrier Indicator Field then indicate in which carrier the dci was found
-      uint32_t cc_idx_grant = dci[k].cif_present ? dci[k].cif : cc_idx;
-
-      // Save DCI
-      phy->set_ul_pending_grant(&sf_cfg_dl, cc_idx_grant, &dci[k]);
-
-      // Logging
-      if (logger.info.enabled()) {
-        char str[512];
-        srsran_dci_ul_info(&dci[k], str, 512);
-        logger.info("PDCCH: cc=%d, %s, snr=%.1f dB", cc_idx_grant, str, ue_dl.chest_res.snr_db);
-      }
-    }
-  }
-
-  return nof_grants;
-}
-
-bool cc_worker::encode_uplink(mac_interface_phy_lte::tb_action_ul_t* action, srsran_uci_data_t* uci_data)
-{
-  srsran_pusch_data_t data = {};
-  ue_ul_cfg.cc_idx         = cc_idx;
-
-  // Setup input data
-  if (action != nullptr) {
-    data.ptr                              = action->tb.payload;
-    ue_ul_cfg.ul_cfg.pusch.softbuffers.tx = action->tb.softbuffer.tx;
-
-    // Use RV from higher layers
-    ue_ul_cfg.ul_cfg.pusch.grant.tb.rv = action->tb.rv;
-
-    // Setup PUSCH grant
-    ue_ul_cfg.grant_available = action->tb.enabled;
-  }
-
-  // Set UCI data and configuration
-  if (uci_data != nullptr) {
-    data.uci                       = uci_data->value;
-    ue_ul_cfg.ul_cfg.pusch.uci_cfg = uci_data->cfg;
-    ue_ul_cfg.ul_cfg.pucch.uci_cfg = uci_data->cfg;
-  } else {
-    ZERO_OBJECT(ue_ul_cfg.ul_cfg.pusch.uci_cfg);
-    ZERO_OBJECT(ue_ul_cfg.ul_cfg.pucch.uci_cfg);
-  }
-
-  // Set UL RNTI
-  ue_ul_cfg.ul_cfg.pucch.rnti = phy->stack->get_ul_sched_rnti(CURRENT_TTI_TX);
-
-  // Check if the RNTI is valid. Early return without transmitting any signal if the RNTI is invalid.
-  if (ue_ul_cfg.ul_cfg.pucch.rnti == SRSRAN_INVALID_RNTI) {
-    return false;
-  }
-
-  // Encode signal
-  int ret = srsran_ue_ul_encode(&ue_ul, &sf_cfg_ul, &ue_ul_cfg, &data);
-  if (ret < 0) {
-    Error("Encoding UL cc=%d", cc_idx);
-  }
-
-  // Store metrics
-  if (action && action->tb.enabled) {
-    ul_metrics_t ul_metrics = {};
-    ul_metrics.mcs          = ue_ul_cfg.ul_cfg.pusch.grant.tb.mcs_idx;
-    ul_metrics.power        = 0;
-    phy->set_ul_metrics(cc_idx, ul_metrics);
-  }
-
-  // Logging
-  if (logger.info.enabled()) {
-    char str[512];
-    if (srsran_ue_ul_info(&ue_ul_cfg, &sf_cfg_ul, &data.uci, str, 512)) {
-      logger.info("%s", str);
-    }
-  }
-
-  return ret > 0;
-}
-
-void cc_worker::set_uci_sr(srsran_uci_data_t* uci_data)
-{
-  Debug("set_uci_sr() query: sr_enabled=%d, last_tx_tti=%d", phy->sr.is_triggered(), phy->sr.get_last_tx_tti());
-  if (srsran_ue_ul_gen_sr(&ue_ul_cfg, &sf_cfg_ul, uci_data, phy->sr.is_triggered())) {
-    if (phy->sr.set_last_tx_tti(CURRENT_TTI_TX)) {
-      Debug("set_uci_sr() sending SR: sr_enabled=true, last_tx_tti=%d", CURRENT_TTI_TX);
-    }
-  }
-}
-
-uint32_t cc_worker::get_wideband_cqi()
-{
-  int cqi_fixed = phy->args->cqi_fixed;
-  int cqi_max   = phy->args->cqi_max;
-
-  uint32_t wb_cqi_value = srsran_cqi_from_snr(phy->get_sinr_db(cc_idx) + ue_dl_cfg.snr_to_cqi_offset);
-
-  if (cqi_fixed >= 0) {
-    wb_cqi_value = cqi_fixed;
-  } else if (cqi_max >= 0 && wb_cqi_value > (uint32_t)cqi_max) {
-    wb_cqi_value = cqi_max;
-  }
-
-  return wb_cqi_value;
-}
-
-void cc_worker::set_uci_periodic_cqi(srsran_uci_data_t* uci_data)
-{
-  // Load last reported RI
-  ue_dl_cfg.last_ri = phy->last_ri;
-
-  srsran_ue_dl_gen_cqi_periodic(&ue_dl, &ue_dl_cfg, get_wideband_cqi(), CURRENT_TTI_TX, uci_data);
-
-  // Store serving cell index for logging purposes
-  uci_data->cfg.cqi.scell_index = cc_idx;
-
-  // Store the reported RI
-  phy->last_ri = ue_dl_cfg.last_ri;
-}
-
-void cc_worker::set_uci_aperiodic_cqi(srsran_uci_data_t* uci_data)
-{
-  if (ue_dl_cfg.cfg.cqi_report.aperiodic_configured) {
-    srsran_ue_dl_gen_cqi_aperiodic(&ue_dl, &ue_dl_cfg, get_wideband_cqi(), uci_data);
-  } else {
-    Warning("Received CQI request but aperiodic mode is not configured");
-  }
-}
-
-void cc_worker::set_uci_ack(srsran_uci_data_t* uci_data,
-                            bool               is_grant_available,
-                            uint32_t           V_dai_ul,
-                            bool               is_pusch_available)
-{
-  srsran_pdsch_ack_t ack_info                = {};
-  uint32_t           nof_configured_carriers = 0;
-
-  // Only PCell generates ACK for all SCell
-  for (uint32_t i = 0; i < phy->args->nof_lte_carriers; i++) {
-    if (phy->cell_state.is_configured(i)) {
-      phy->get_dl_pending_ack(&sf_cfg_ul, i, &ack_info.cc[i]);
-      nof_configured_carriers++;
-    }
-  }
-
-  // Configure ACK parameters
-  ack_info.is_grant_available     = is_grant_available;
-  ack_info.is_pusch_available     = is_pusch_available;
-  ack_info.V_dai_ul               = V_dai_ul;
-  ack_info.tdd_ack_multiplex      = ue_ul_cfg.ul_cfg.pucch.tdd_ack_multiplex;
-  ack_info.simul_cqi_ack          = ue_ul_cfg.ul_cfg.pucch.simul_cqi_ack;
-  ack_info.ack_nack_feedback_mode = ue_ul_cfg.ul_cfg.pucch.ack_nack_feedback_mode;
-  ack_info.nof_cc                 = nof_configured_carriers;
-  ack_info.transmission_mode      = ue_dl_cfg.cfg.tm;
-
-  // Generate ACK/NACK bits
-  srsran_ue_dl_gen_ack(&ue_dl.cell, &sf_cfg_dl, &ack_info, uci_data);
-}
-
 /************
  *
  * Configuration Functions
@@ -883,11 +602,11 @@ void cc_worker::set_uci_ack(srsran_uci_data_t* uci_data,
 
 /* Translates RRC structs into PHY structs
  */
-void cc_worker::set_config_nolock(const srsran::phy_cfg_t& phy_cfg)
+void cc_worker::set_config_nolock(const srsran::phy_cfg_t& phy_cfg, int stack_idx)
 {
   // Save configuration
   ue_dl_cfg.cfg    = phy_cfg.dl_cfg;
-  ue_ul_cfg.ul_cfg = phy_cfg.ul_cfg;
+  ue_ul_cfg[stack_idx].ul_cfg = phy_cfg.ul_cfg;
 
   phy->set_pdsch_cfg(&ue_dl_cfg.cfg.pdsch);
 }

@@ -142,10 +142,10 @@ void sf_worker::set_tdd_config_nolock(srsran_tdd_config_t config)
   tdd_config = config;
 }
 
-void sf_worker::set_config_nolock(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg)
+void sf_worker::set_config_nolock(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg, int stack_idx)
 {
   if (cc_idx < cc_workers.size()) {
-    cc_workers[cc_idx]->set_config_nolock(phy_cfg);
+    cc_workers[cc_idx]->set_config_nolock(phy_cfg, stack_idx);
     if (cc_idx > 0) {
       // Update DCI config for PCell
       cc_workers[0]->upd_config_dci_nolock(phy_cfg.dl_cfg.dci);
@@ -174,16 +174,9 @@ void sf_worker::work_imp()
   for (uint32_t carrier_idx = 0; carrier_idx < cc_workers.size(); carrier_idx++) {
     // Process all DL and special subframes
     if (srsran_sfidx_tdd_type(tdd_config, tti % 10) != SRSRAN_TDD_SF_U || cell.frame_type == SRSRAN_FDD) {
-      srsran_mbsfn_cfg_t mbsfn_cfg;
-      ZERO_OBJECT(mbsfn_cfg);
 
-      if (carrier_idx == 0 && phy->is_mbsfn_sf(&mbsfn_cfg, tti)) {
-        rx_signal_ok =
-            cc_workers[0]->work_dl_mbsfn(mbsfn_cfg); // Don't do chest_ok in mbsfn since it trigger measurements
-      } else {
-        if (phy->cell_state.is_configured(carrier_idx)) {
-          rx_signal_ok = cc_workers[carrier_idx]->work_dl_regular();
-        }
+      if (phy->cell_state.is_configured(carrier_idx)) {
+        rx_signal_ok = cc_workers[carrier_idx]->work_dl_regular();
       }
     }
   }
@@ -191,47 +184,8 @@ void sf_worker::work_imp()
 
   /***** Uplink Generation + Transmission *******/
 
-  /* If TTI+4 is an uplink subframe (TODO: Support short PRACH and SRS in UpPts special subframes) */
-  if ((srsran_sfidx_tdd_type(tdd_config, TTI_TX(tti) % 10) == SRSRAN_TDD_SF_U) || cell.frame_type == SRSRAN_FDD) {
-    // Generate Uplink signal if no PRACH pending
-    if (!prach_ptr) {
-      // Common UCI data object for all carriers
-      srsran_uci_data_t uci_data;
-      reset_uci(&uci_data);
-
-      uint32_t uci_cc_idx = phy->get_ul_uci_cc(TTI_TX(tti));
-
-      // Fill periodic CQI data; In case of periodic CSI report collision, lower carrier index have preference, so
-      // stop as soon as either CQI data is enabled or RI is carried
-      for (uint32_t carrier_idx = 0; carrier_idx < phy->args->nof_lte_carriers and not uci_data.cfg.cqi.data_enable and
-                                     uci_data.cfg.cqi.ri_len == 0;
-           carrier_idx++) {
-        if (phy->cell_state.is_active(carrier_idx, TTI_TX(tti))) {
-          cc_workers[carrier_idx]->set_uci_periodic_cqi(&uci_data);
-        }
-      }
-
-      // Loop through all carriers
-      for (uint32_t carrier_idx = 0; carrier_idx < phy->args->nof_lte_carriers; carrier_idx++) {
-        if (phy->cell_state.is_active(carrier_idx, tti)) {
-          tx_signal_ready |= cc_workers[carrier_idx]->work_ul(uci_cc_idx == carrier_idx ? &uci_data : nullptr);
-
-          // Set signal pointer based on offset
-          tx_signal_ptr.set(carrier_idx, 0, phy->args->nof_rx_ant, cc_workers[carrier_idx]->get_tx_buffer(0));
-        }
-      }
-    }
-  }
-
-  // Set PRACH buffer signal pointer
-  if (prach_ptr) {
-    tx_signal_ready = true;
-    tx_signal_ptr.set(0, prach_ptr);
-    prach_ptr = nullptr;
-  }
-
   // Call worker_end to transmit the signal
-  phy->worker_end(context, tx_signal_ready, tx_signal_ptr);
+  phy->worker_end(context, false, tx_signal_ptr);
 
   if (rx_signal_ok) {
     update_measurements();
@@ -265,9 +219,12 @@ void sf_worker::update_measurements()
     }
     cc_workers[cc_idx]->update_measurements(serving_cells, rssi_power_buffer);
   }
+  
   // Send report to stack
   if (not serving_cells.empty()) {
-    phy->stack->new_cell_meas(serving_cells);
+    for (auto stack : *(phy->stacks)) {
+      stack->new_cell_meas(serving_cells);
+    }
   }
 }
 

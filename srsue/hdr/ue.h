@@ -33,6 +33,7 @@
 #include <string>
 
 #include "phy/ue_phy_base.h"
+#include "phy/phy.h"
 #include "srsran/common/buffer_pool.h"
 #include "srsran/radio/radio.h"
 #include "srsran/srslog/srslog.h"
@@ -98,9 +99,10 @@ class ue : public ue_metrics_interface
 {
 public:
   ue();
+  ue(std::string id);
   ~ue();
 
-  int  init(const all_args_t& args_);
+  int  init(const all_args_t& args_, phy* phy_, int index, srslog::sink& sink);
   void stop();
   bool switch_on();
   bool switch_off();
@@ -113,10 +115,11 @@ public:
 
 private:
   // UE consists of a radio, a PHY and a stack element
-  std::unique_ptr<ue_phy_base>        phy;
+  phy*                        phy_h;
   std::unique_ptr<srsran::radio_base> radio;
   std::unique_ptr<ue_stack_base>      stack;
   std::unique_ptr<gw>                 gw_inst;
+  std::unique_ptr<srsue::phy_interface_stack_lte> phy_proxy_inst;
 
   // Generic logger members
   srslog::basic_logger& logger;

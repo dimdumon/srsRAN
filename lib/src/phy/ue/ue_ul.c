@@ -631,12 +631,19 @@ int srsran_ue_ul_encode(srsran_ue_ul_t* q, srsran_ul_sf_cfg_t* sf, srsran_ue_ul_
     ret = srs_encode(q, sf->tti, cfg) ? -1 : 1;
   } else {
     // Set Zero output buffer if no UL transmission is required so the buffer does not keep previous transmission data
-    if (q->cell.nof_prb) {
-      srsran_vec_cf_zero(q->out_buffer, SRSRAN_SF_LEN_PRB(q->cell.nof_prb));
-    }
+    // if (q->cell.nof_prb) {
+    //   srsran_vec_cf_zero(q->out_buffer, SRSRAN_SF_LEN_PRB(q->cell.nof_prb));
+    // } TODO this is ugly
   }
 
   return ret;
+}
+
+void zero_output_buffer(srsran_ue_ul_t* q) {
+  // Set Zero output buffer if no UL transmission is required so the buffer does not keep previous transmission data
+  if (q->cell.nof_prb) {
+    srsran_vec_cf_zero(q->out_buffer, SRSRAN_SF_LEN_PRB(q->cell.nof_prb));
+  }
 }
 
 bool srsran_ue_ul_info(srsran_ue_ul_cfg_t* cfg,

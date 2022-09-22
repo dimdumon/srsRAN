@@ -49,11 +49,25 @@ const srsran::phy_cfg_t& worker_pool::phy_cfg_stash_t::get_cfg(uint32_t sf_idx)
 }
 
 worker_pool::worker_pool(uint32_t max_workers) :
-  pool(max_workers), phy_cfg_stash{{max_workers, max_workers, max_workers, max_workers, max_workers}}
-{}
+  pool(max_workers), phy_cfg_stash{ {{max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  {max_workers, max_workers, max_workers, max_workers, max_workers},
+  } } // TODO: fix this
+{
+  // for (int i = 0; i < MULTIUE_MAX_UES; i++)
+  //   phy_cfg_stash[i] = {{max_workers, max_workers, max_workers, max_workers, max_workers}};
+}
 
 bool worker_pool::init(phy_common* common, int prio)
 {
+  nof_sim_ues = common->args->nof_sim_ues;
   // Add workers to workers pool and start threads
   for (uint32_t i = 0; i < common->args->nof_phy_threads; i++) {
     srslog::basic_logger& log = srslog::fetch_basic_logger(fmt::format("PHY{}", i));
@@ -85,9 +99,11 @@ sf_worker* worker_pool::wait_worker(uint32_t tti)
 
   // Iterate all CC searching for a pending configuration
   uint32_t worker_id = w->get_id();
-  for (uint32_t cc_idx = 0; cc_idx < SRSRAN_MAX_CARRIERS; cc_idx++) {
-    if (phy_cfg_stash[cc_idx].is_pending(worker_id)) {
-      w->set_config_nolock(cc_idx, phy_cfg_stash[cc_idx].get_cfg(worker_id));
+  for (int stack_idx = 0; stack_idx < nof_sim_ues; stack_idx++) {
+    for (uint32_t cc_idx = 0; cc_idx < SRSRAN_MAX_CARRIERS; cc_idx++) {
+      if (phy_cfg_stash[stack_idx][cc_idx].is_pending(worker_id)) {
+        w->set_config_nolock(cc_idx, phy_cfg_stash[stack_idx][cc_idx].get_cfg(worker_id), stack_idx);
+      }
     }
   }
 
@@ -104,7 +120,7 @@ void worker_pool::stop()
   pool.stop();
 }
 
-void worker_pool::set_config(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg)
+void worker_pool::set_config(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg, int stack_idx)
 {
   // Protect CC index bounds
   if (cc_idx >= SRSRAN_MAX_CARRIERS) {
@@ -113,7 +129,7 @@ void worker_pool::set_config(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg)
 
   // Protect configuration
   std::unique_lock<std::mutex> lock(phy_cfg_mutex);
-  phy_cfg_stash[cc_idx].set_cfg(phy_cfg);
+  phy_cfg_stash[stack_idx][cc_idx].set_cfg(phy_cfg);
 }
 }; // namespace lte
 }; // namespace srsue

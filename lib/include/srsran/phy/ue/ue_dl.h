@@ -79,6 +79,7 @@ typedef struct SRSRAN_API {
   srsran_cell_t cell;
   uint32_t      nof_rx_antennas;
   uint16_t      current_mbsfn_area_id;
+  uint16_t      pregen_rnti;
 
   // Objects for all DL Physical Channels
   srsran_pcfich_t pcfich;
@@ -102,8 +103,10 @@ typedef struct SRSRAN_API {
   cf_t*              sf_symbols[SRSRAN_MAX_PORTS];
   dci_blind_search_t current_ss_common;
 
-  srsran_dci_msg_t pending_ul_dci_msg[SRSRAN_MAX_DCI_MSG];
-  uint32_t         pending_ul_dci_count;
+  srsran_dci_msg_t   pending_ul_dci_msgs[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG];
+  uint32_t           pending_ul_dci_counts[MULTIUE_MAX_UES];
+  uint16_t           pending_ul_dci_msg_rntis[MULTIUE_MAX_UES];
+  uint16_t           max_pending_rntis;
 
   srsran_dci_location_t allocated_locations[SRSRAN_MAX_DCI_MSG];
   uint32_t              nof_allocated_locations;
@@ -181,17 +184,31 @@ SRSRAN_API int srsran_ue_dl_decode_fft_estimate_noguru(srsran_ue_dl_t*     q,
                                                        cf_t*               input[SRSRAN_MAX_PORTS]);
 
 /* Finds UL/DL DCI in the signal processed in a previous call to decode_fft_estimate() */
-SRSRAN_API int srsran_ue_dl_find_ul_dci(srsran_ue_dl_t*     q,
+// SRSRAN_API int srsran_ue_dl_find_ul_dci(srsran_ue_dl_t*     q,
+//                                         srsran_dl_sf_cfg_t* sf,
+//                                         srsran_ue_dl_cfg_t* dl_cfg,
+//                                         uint16_t            rnti,
+//                                         srsran_dci_ul_t     dci_msg[SRSRAN_MAX_DCI_MSG]);
+
+SRSRAN_API int* srsran_ue_dl_find_ul_dcis(srsran_ue_dl_t*   q,
                                         srsran_dl_sf_cfg_t* sf,
                                         srsran_ue_dl_cfg_t* dl_cfg,
-                                        uint16_t            rnti,
-                                        srsran_dci_ul_t     dci_msg[SRSRAN_MAX_DCI_MSG]);
+                                        uint16_t*           rntis,
+                                        uint16_t            rntis_len,
+                                        srsran_dci_ul_t     dci_ul[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG]);
 
 SRSRAN_API int srsran_ue_dl_find_dl_dci(srsran_ue_dl_t*     q,
                                         srsran_dl_sf_cfg_t* sf,
                                         srsran_ue_dl_cfg_t* dl_cfg,
                                         uint16_t            rnti,
                                         srsran_dci_dl_t     dci_msg[SRSRAN_MAX_DCI_MSG]);
+
+SRSRAN_API int* srsran_ue_dl_find_dl_dcis(srsran_ue_dl_t*   q,
+                                        srsran_dl_sf_cfg_t* sf,
+                                        srsran_ue_dl_cfg_t* dl_cfg,
+                                        uint16_t*           rntis,
+                                        uint16_t            rntis_len,
+                                        srsran_dci_dl_t     dci_dl[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG]);
 
 SRSRAN_API int srsran_ue_dl_dci_to_pdsch_grant(srsran_ue_dl_t*       q,
                                                srsran_dl_sf_cfg_t*   sf,

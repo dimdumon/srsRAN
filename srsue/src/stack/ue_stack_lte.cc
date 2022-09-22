@@ -33,33 +33,34 @@ using namespace srsran;
 
 namespace srsue {
 
-ue_stack_lte::ue_stack_lte() :
+ue_stack_lte::ue_stack_lte(srslog::sink& sink, std::string id) :
   args(),
-  stack_logger(srslog::fetch_basic_logger("STCK", false)),
-  mac_logger(srslog::fetch_basic_logger("MAC")),
-  rlc_logger(srslog::fetch_basic_logger("RLC", false)),
-  pdcp_logger(srslog::fetch_basic_logger("PDCP", false)),
-  rrc_logger(srslog::fetch_basic_logger("RRC", false)),
-  usim_logger(srslog::fetch_basic_logger("USIM", false)),
-  nas_logger(srslog::fetch_basic_logger("NAS", false)),
-  mac_nr_logger(srslog::fetch_basic_logger("MAC-NR")),
-  rrc_nr_logger(srslog::fetch_basic_logger("RRC-NR", false)),
-  rlc_nr_logger(srslog::fetch_basic_logger("RLC-NR", false)),
-  pdcp_nr_logger(srslog::fetch_basic_logger("PDCP-NR", false)),
+  stack_logger(srslog::fetch_basic_logger("STCK" + id, sink, false)),
+  mac_logger(srslog::fetch_basic_logger("MAC" + id, sink)),
+  rlc_logger(srslog::fetch_basic_logger("RLC" + id, sink, false)),
+  pdcp_logger(srslog::fetch_basic_logger("PDCP" + id, sink, false)),
+  rrc_logger(srslog::fetch_basic_logger("RRC" + id, sink, false)),
+  usim_logger(srslog::fetch_basic_logger("USIM" + id, sink, false)),
+  nas_logger(srslog::fetch_basic_logger("NAS" + id, sink, false)),
+  mac_nr_logger(srslog::fetch_basic_logger("MAC-NR", sink)),
+  rrc_nr_logger(srslog::fetch_basic_logger("RRC-NR" + id, sink, false)),
+  rlc_nr_logger(srslog::fetch_basic_logger("RLC-NR" + id, sink, false)),
+  pdcp_nr_logger(srslog::fetch_basic_logger("PDCP-NR" + id, sink, false)),
   mac_pcap(),
   mac_nr_pcap(),
-  rlc("RLC"),
-  mac("MAC", &task_sched),
-  rrc(this, &task_sched),
-  rlc_nr("RLC-NR"),
-  mac_nr(&task_sched),
+  rlc(("RLC" + id).c_str()),
+  mac(("MAC" + id).c_str(), &task_sched),
+  rrc(this, &task_sched, id),
+  rlc_nr(("RLC-NR" + id).c_str()),
+  mac_nr("MAC-NR", &task_sched),
   rrc_nr(&task_sched),
-  pdcp(&task_sched, "PDCP"),
-  pdcp_nr(&task_sched, "PDCP-NR"),
-  nas(srslog::fetch_basic_logger("NAS", false), &task_sched),
-  thread("STACK"),
+  pdcp(&task_sched, ("PDCP" + id).c_str()),
+  pdcp_nr(&task_sched, ("PDCP-NR" + id).c_str()),
+  nas(srslog::fetch_basic_logger("NAS" + id, false), &task_sched),
+  thread(("STACK" + id).c_str()),
   task_sched(512, 64),
-  tti_tprof("tti_tprof", "STCK", TTI_STAT_PERIOD)
+  tti_tprof("tti_tprof", ("STCK" + id).c_str(), TTI_STAT_PERIOD),
+  stack_id(id)
 {
   get_background_workers().set_nof_workers(2);
   ue_task_queue  = task_sched.make_task_queue();
@@ -125,7 +126,7 @@ int ue_stack_lte::init(const stack_args_t& args_)
   nas_logger.set_level(srslog::str_to_basic_level(args.log.nas_level));
   nas_logger.set_hex_dump_max_size(args.log.nas_hex_limit);
 
-  mac_nr_logger.set_level(srslog::str_to_basic_level(args.log.mac_level));
+  mac_nr_logger.set_level(srslog::str_to_basic_level("NONE"));
   mac_nr_logger.set_hex_dump_max_size(args.log.mac_hex_limit);
   rrc_nr_logger.set_level(srslog::str_to_basic_level(args.log.rrc_level));
   rrc_nr_logger.set_hex_dump_max_size(args.log.rrc_hex_limit);
@@ -150,10 +151,13 @@ int ue_stack_lte::init(const stack_args_t& args_)
     pcap.erase(std::remove_if(pcap.begin(), pcap.end(), isspace), pcap.end());
     if (pcap == "mac" || pcap == "MAC") {
       args.pkt_trace.mac_pcap.enable = true;
+      args.pkt_trace.mac_pcap.filename = args.pkt_trace.mac_pcap.filename.insert(args.pkt_trace.mac_pcap.filename.find(".pcap"), stack_id);
     } else if (pcap == "mac_nr" || pcap == "MAC_NR") {
       args.pkt_trace.mac_nr_pcap.enable = true;
+      args.pkt_trace.mac_nr_pcap.filename = args.pkt_trace.mac_nr_pcap.filename.insert(args.pkt_trace.mac_nr_pcap.filename.find(".pcap"), stack_id);
     } else if (pcap == "nas" || pcap == "NAS") {
       args.pkt_trace.nas_pcap.enable = true;
+      args.pkt_trace.nas_pcap.filename = args.pkt_trace.nas_pcap.filename.insert(args.pkt_trace.nas_pcap.filename.find(".pcap"), stack_id);
     } else if (pcap == "none" || pcap == "NONE") {
       args.pkt_trace.mac_pcap.enable    = false;
       args.pkt_trace.mac_nr_pcap.enable = false;

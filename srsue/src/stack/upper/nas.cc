@@ -56,7 +56,8 @@ nas::nas(srslog::basic_logger& logger_, srsran::task_sched_handle task_sched_) :
   t3411(task_sched_.get_unique_timer()),
   t3421(task_sched_.get_unique_timer()),
   reattach_timer(task_sched_.get_unique_timer()),
-  airplane_mode_sim_timer(task_sched_.get_unique_timer())
+  airplane_mode_sim_timer(task_sched_.get_unique_timer()),
+  state(logger_)
 {}
 
 int nas::init(usim_interface_nas* usim_, rrc_interface_nas* rrc_, gw_interface_nas* gw_, const nas_args_t& cfg_)
@@ -71,7 +72,7 @@ int nas::init(usim_interface_nas* usim_, rrc_interface_nas* rrc_, gw_interface_n
   }
 
   // parse and sanity check EIA list
-  if (parse_security_algorithm_list(cfg_.eia, eia_caps) != SRSRAN_SUCCESS) {
+  if (true) {
     logger.warning("Failed to parse integrity protection algorithm list: Defaulting to EIA1-128, EIA2-128, EIA3-128");
     eia_caps[0] = false;
     eia_caps[1] = true;
@@ -80,7 +81,7 @@ int nas::init(usim_interface_nas* usim_, rrc_interface_nas* rrc_, gw_interface_n
   }
 
   // parse and sanity check EEA list
-  if (parse_security_algorithm_list(cfg_.eea, eea_caps) != SRSRAN_SUCCESS) {
+  if (true) {
     logger.warning("Failed to parse encryption algorithm list: Defaulting to EEA0, EEA1-128, EEA2-128, EEA3-128");
     eea_caps[0] = true;
     eea_caps[1] = true;
@@ -108,6 +109,8 @@ int nas::init(usim_interface_nas* usim_, rrc_interface_nas* rrc_, gw_interface_n
     airplane_mode_sim_timer.set(cfg.sim.airplane_t_on_ms, [this](uint32_t tid) { timer_expired(tid); });
     airplane_mode_sim_timer.run();
   }
+
+  //state.set_logger(logger);
 
   running = true;
   return SRSRAN_SUCCESS;
@@ -315,6 +318,8 @@ void nas::start_attach_request(srsran::establishment_cause_t cause_)
 
   // start T3410
   logger.debug("Starting T3410");
+  t3410.set(999999);
+
   t3410.run();
 
   // stop T3411
@@ -437,6 +442,14 @@ bool nas::connection_request_completed(bool outcome)
   }
   return true;
 }
+
+void nas::reattach()
+{
+  reset_security_context();
+  enter_emm_deregistered(emm_state_t::deregistered_substate_t::plmn_search);
+  reattach_timer.run();
+}
+
 
 void nas::plmn_search_completed(const found_plmn_t found_plmns[MAX_FOUND_PLMNS], int nof_plmns)
 {
@@ -683,7 +696,7 @@ void nas::select_plmn()
     std::string debug_str = "Could not find Home PLMN Id=" + home_plmn.to_string() +
                             ", trying to connect to PLMN Id=" + known_plmns[0].to_string();
     logger.info("%s", debug_str.c_str());
-    srsran::console("%s\n", debug_str.c_str());
+    // srsran::console("%s\n", debug_str.c_str());
     current_plmn = known_plmns[0];
     state.set_deregistered(emm_state_t::deregistered_substate_t::normal_service);
   }
@@ -1633,6 +1646,8 @@ void nas::gen_attach_request(srsran::unique_byte_buffer_t& msg)
 
   // start T3410
   logger.debug("Starting T3410. Timeout in %d ms.", t3410.duration());
+
+  t3410.set(999999);
   t3410.run();
 }
 

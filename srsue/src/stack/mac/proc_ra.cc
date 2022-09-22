@@ -27,6 +27,9 @@
 #include <inttypes.h> // for printing uint64_t
 #include <stdint.h>
 #include <stdlib.h>
+#include "srsran/asn1/rrc.h"
+#include <iostream>
+
 
 /* Random access procedure as specified in Section 5.1 of 36.321 */
 
@@ -139,10 +142,10 @@ void ra_proc::step(uint32_t tti_)
       state_pdcch_setup();
       break;
     case RESPONSE_RECEPTION:
-      state_response_reception(tti_);
+      // state_response_reception(tti_);
       break;
     case BACKOFF_WAIT:
-      state_backoff_wait(tti_);
+      // state_backoff_wait(tti_);
       break;
     case CONTENTION_RESOLUTION:
       state_contention_resolution();
@@ -159,7 +162,7 @@ void ra_proc::state_pdcch_setup()
     ra_tti  = info.tti_ra;
     ra_rnti = 1 + (ra_tti % 10) + (10 * info.f_id);
     rInfo("seq=%d, ra-rnti=0x%x, ra-tti=%d, f_id=%d", sel_preamble.load(), ra_rnti, info.tti_ra, info.f_id);
-    srsran::console(
+    rDebug(
         "Random Access Transmission: seq=%d, tti=%d, ra-rnti=0x%x\n", sel_preamble.load(), info.tti_ra, ra_rnti);
     rar_window_st = ra_tti + 3;
     rntis->set_rar_rnti(ra_rnti);
@@ -213,7 +216,7 @@ void ra_proc::state_backoff_wait(uint32_t tti)
 void ra_proc::state_contention_resolution()
 {
   // Once Msg3 is transmitted, start contention resolution timer
-  if (mux_unit->msg3_is_transmitted() && !contention_resolution_timer.is_running()) {
+  if (!contention_resolution_timer.is_running()) {
     // Start contention resolution timer
     rInfo("Starting ContentionResolutionTimer=%d ms", contention_resolution_timer.duration());
     contention_resolution_timer.run();
@@ -372,7 +375,7 @@ void ra_proc::new_grant_dl(mac_interface_phy_lte::mac_grant_dl_t grant, mac_inte
  * as definied in 5.1.4 and then defer the handling of the RA state machine to be
  * executed on the Stack thread.
  */
-void ra_proc::tb_decoded_ok(const uint8_t cc_idx, const uint32_t tti)
+void ra_proc::tb_decoded_ok(const uint8_t cc_idx, const uint32_t tti, int ra_rnti_counter)
 {
   if (pcap) {
     pcap->write_dl_ranti(rar_pdu_buffer, rar_grant_nbytes, ra_rnti, true, tti, cc_idx);
@@ -394,8 +397,15 @@ void ra_proc::tb_decoded_ok(const uint8_t cc_idx, const uint32_t tti)
 
   current_ta = 0;
 
+  int counter = 0;
+
   while (rar_pdu_msg.next()) {
-    if (rar_pdu_msg.get()->has_rapid() && rar_pdu_msg.get()->get_rapid() == sel_preamble) {
+    counter++;
+    if (rar_pdu_msg.get()->has_rapid() && (ra_rnti_counter == 0 || counter == ra_rnti_counter)) {
+
+      sel_preamble = rar_pdu_msg.get()->get_rapid(); // Modified to always use the same preamble as has been received
+
+
       rar_received = true;
       process_timeadv_cmd(tti, rar_pdu_msg.get()->get_ta_cmd());
 
@@ -459,7 +469,7 @@ void ra_proc::tb_decoded_ok(const uint8_t cc_idx, const uint32_t tti)
 void ra_proc::response_error()
 {
   rntis->clear_temp_rnti();
-  preambleTransmissionCounter++;
+  // preambleTransmissionCounter++;
   contention_resolution_timer.stop();
   if (preambleTransmissionCounter >= rach_cfg.preambleTransMax + 1) {
     rError("Maximum number of transmissions reached (%d)", rach_cfg.preambleTransMax);
@@ -500,7 +510,7 @@ void ra_proc::complete()
 
   rrc->ra_completed();
 
-  srsran::console("Random Access Complete.     c-rnti=0x%x, ta=%d\n", rntis->get_crnti(), current_ta);
+  srsran::console("Recording a new connection.     c-rnti=0x%x, ta=%d\n", rntis->get_crnti(), current_ta);
   rInfo("Random Access Complete.     c-rnti=0x%x, ta=%d", rntis->get_crnti(), current_ta);
 
   state = IDLE;
@@ -508,6 +518,8 @@ void ra_proc::complete()
 
 void ra_proc::start_mac_order(uint32_t msg_len_bits)
 {
+  rntis->clear_crnti();
+  rntis->clear_temp_rnti();
   if (state == IDLE) {
     started_by_pdcch = false;
     new_ra_msg_len   = msg_len_bits;
@@ -545,8 +557,26 @@ void ra_proc::timer_expired(uint32_t timer_id)
  */
 bool ra_proc::contention_resolution_id_received(uint64_t rx_contention_id)
 {
+  asn1::cbit_ref bref2((uint8_t*)&rx_contention_id, 8);
+  asn1::rrc::ul_ccch_msg_s msg2;
+  msg2.unpack(bref2);
+  // auto r = msg2.msg.c1().rrc_conn_request().crit_exts.rrc_conn_request_r8().ue_id.type();
+  auto r = msg2.msg.c1().rrc_conn_request().crit_exts.rrc_conn_request_r8().ue_id.type();
+  uint64_t tmsi      = 0;
+  if (r == 0) {
+    tmsi = ((uint32_t)msg2.msg.c1().rrc_conn_request().crit_exts.rrc_conn_request_r8().ue_id.s_tmsi().m_tmsi.to_number());
+    // std::cout << "printing tmsi as a string " << msg2.msg.c1().rrc_conn_request().crit_exts.rrc_conn_request_r8().ue_id.s_tmsi().m_tmsi.to_string();
+    // std::cout << std::endl;
+    printf("User's TMSI during this connection is 0x%lx (%ld) \n", tmsi, tmsi);
+  } else {
+    printf("User's TMSI during this connection is unknown...\n");
+    printf("%lx\n",rx_contention_id);
+  }
+
+
+
   task_queue.push([this, rx_contention_id]() { contention_resolution_id_received_nolock(rx_contention_id); });
-  return (transmitted_contention_id == rx_contention_id);
+  return true;
 }
 
 /*
@@ -566,12 +596,15 @@ bool ra_proc::contention_resolution_id_received_nolock(uint64_t rx_contention_id
   // MAC PDU successfully decoded and contains MAC CE contention Id
   contention_resolution_timer.stop();
 
-  if (transmitted_contention_id == rx_contention_id) {
+  if (true) {
     // UE Contention Resolution ID included in MAC CE matches the CCCH SDU transmitted in Msg3
     uecri_successful = true;
     complete();
   } else {
     rInfo("Transmitted UE Contention Id differs from received Contention ID (0x%" PRIx64 " != 0x%" PRIx64 ")",
+          transmitted_contention_id.load(),
+          rx_contention_id);
+    printf("Transmitted UE Contention Id differs from received Contention ID (0x%" PRIx64 " != 0x%" PRIx64 ")",
           transmitted_contention_id.load(),
           rx_contention_id);
 
@@ -606,7 +639,7 @@ void ra_proc::update_rar_window(rnti_window_safe& ra_window)
     // reset RAR window params to default values to disable RAR search
     ra_window.reset();
   } else {
-    ra_window.set(rach_cfg.responseWindowSize, rar_window_st);
+    ra_window.set(99999, rar_window_st);
   }
   rDebug("rar_window_start=%d, rar_window_length=%d", ra_window.get_start(), ra_window.get_length());
 }

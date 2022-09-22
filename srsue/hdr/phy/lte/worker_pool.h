@@ -33,6 +33,7 @@ class worker_pool
 private:
   srsran::thread_pool                      pool;
   std::vector<std::unique_ptr<sf_worker> > workers;
+  int nof_sim_ues;
 
   class phy_cfg_stash_t
   {
@@ -47,7 +48,7 @@ private:
     const srsran::phy_cfg_t& get_cfg(uint32_t sf_idx);
   };
   std::mutex                                       phy_cfg_mutex; ///< Protects configuration stash
-  std::array<phy_cfg_stash_t, SRSRAN_MAX_CARRIERS> phy_cfg_stash; ///< Stores the latest worker configuration
+  std::array<std::array<phy_cfg_stash_t, SRSRAN_MAX_CARRIERS>, MULTIUE_MAX_UES> phy_cfg_stash; ///< Stores the latest worker configuration
 
 public:
   sf_worker* operator[](std::size_t pos) { return workers.at(pos).get(); }
@@ -65,7 +66,7 @@ public:
    * @param cc_idx CC index
    * @param phy_cfg Actual PHY configuration
    */
-  void set_config(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg);
+  void set_config(uint32_t cc_idx, const srsran::phy_cfg_t& phy_cfg, int stack_idx);
 };
 
 } // namespace lte

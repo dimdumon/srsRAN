@@ -184,8 +184,9 @@ uint16_t meas_cell_eutra::get_mnc() const
  *           Neighbour Cell List
  ********************************************/
 template <class T>
-meas_cell_list<T>::meas_cell_list(srsran::task_sched_handle task_sched_) :
-  serv_cell(new T(task_sched_.get_unique_timer())), task_sched(task_sched_)
+meas_cell_list<T>::meas_cell_list(srsran::task_sched_handle task_sched_, std::string logname) :
+  serv_cell(new T(task_sched_.get_unique_timer())), task_sched(task_sched_),
+  logger(srslog::fetch_basic_logger(logname))
 {}
 
 template <class T>

@@ -32,8 +32,9 @@ std::string to_string(const phy_cell_t& cell)
 
 phy_controller::phy_controller(srsue::phy_interface_rrc_lte*                 phy_,
                                srsran::task_sched_handle                     task_sched_,
+                               std::string                                   logname,
                                std::function<void(uint32_t, uint32_t, bool)> on_cell_selection) :
-  base_t(srslog::fetch_basic_logger("RRC")),
+  base_t(srslog::fetch_basic_logger(logname)),
   phy(phy_),
   task_sched(task_sched_),
   cell_selection_always_observer(std::move(on_cell_selection))

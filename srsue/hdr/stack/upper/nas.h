@@ -74,6 +74,8 @@ public:
   uint32_t get_ipv4_addr() override;
   bool     get_ipv6_addr(uint8_t* ipv6_addr) override;
   void     plmn_search_completed(const found_plmn_t found_plmns[MAX_FOUND_PLMNS], int nof_plmns) final;
+  void     reattach() final;
+
 
   // Stack interface
   bool switch_on();
@@ -96,7 +98,7 @@ private:
   bool running = false;
 
   nas_args_t  cfg   = {};
-  emm_state_t state = {};
+  emm_state_t state;// = {};
 
   srsran::barring_t current_barring = srsran::barring_t::none;
 
@@ -145,7 +147,7 @@ private:
   const uint32_t t3410_duration_ms          = 15 * 1000;      // 15s
   const uint32_t t3411_duration_ms          = 10 * 1000;      // 10s
   const uint32_t t3421_duration_ms          = 15 * 1000;      // 15s
-  const uint32_t reattach_timer_duration_ms = 2 * 1000;       // 2s (arbitrarily chosen to delay re-attach)
+  const uint32_t reattach_timer_duration_ms = 100;       // 0.1s (arbitrarily chosen to delay re-attach)
 
   // TS 23.003 Sec. 6.2.2 IMEISV's last two octets are Software Version Number (SVN)
   // which identifies the software version number of the mobile equipment

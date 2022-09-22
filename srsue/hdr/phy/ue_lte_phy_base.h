@@ -34,7 +34,7 @@ namespace srsue {
 
 class stack_interface_phy_lte;
 
-class ue_lte_phy_base : public ue_phy_base, public phy_interface_stack_lte, public srsran::phy_interface_radio
+class ue_lte_phy_base : public ue_phy_base, public srsran::phy_interface_radio  //, public phy_interface_stack_lte
 {
 public:
   ue_lte_phy_base(){};
@@ -42,9 +42,10 @@ public:
 
   virtual std::string get_type() = 0;
 
-  virtual int  init(const phy_args_t& args_)                                                                       = 0;
-  virtual int  init(const phy_args_t& args_, stack_interface_phy_lte* stack_, srsran::radio_interface_phy* radio_) = 0;
-  virtual void stop()                                                                                              = 0;
+  virtual int  init(const phy_args_t& args_)                                      = 0;
+  virtual int  init(const phy_args_t& args_, srsran::radio_interface_phy* radio_) = 0;
+  virtual int  init(stack_interface_phy_lte* stack_)                              = 0;
+  virtual void stop()                                                             = 0;
 
   virtual void wait_initialize() = 0;
   virtual void start_plot()      = 0;

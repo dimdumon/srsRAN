@@ -57,12 +57,12 @@ const static uint32_t required_sibs[NOF_REQUIRED_SIBS] = {0, 1, 2, 12}; // SIB1,
   Base functions
 *******************************************************************************/
 
-rrc::rrc(stack_interface_rrc* stack_, srsran::task_sched_handle task_sched_) :
+rrc::rrc(stack_interface_rrc* stack_, srsran::task_sched_handle task_sched_, std::string id) :
   stack(stack_),
   task_sched(task_sched_),
   state(RRC_STATE_IDLE),
   last_state(RRC_STATE_CONNECTED),
-  logger(srslog::fetch_basic_logger("RRC")),
+  logger(srslog::fetch_basic_logger("RRC" + id)),
   measurements(new rrc_meas()),
   cell_searcher(this),
   si_acquirer(this),
@@ -77,8 +77,8 @@ rrc::rrc(stack_interface_rrc* stack_, srsran::task_sched_handle task_sched_) :
   conn_setup_proc(this),
   ho_handler(this),
   conn_recfg_proc(this),
-  meas_cells_nr(task_sched_),
-  meas_cells(task_sched_)
+  meas_cells_nr(task_sched_, "RRC" + id),
+  meas_cells(task_sched_, "RRC" + id)
 {}
 
 rrc::~rrc() = default;
@@ -134,7 +134,7 @@ void rrc::init(phy_interface_rrc_lte* phy_,
       }
     }
   };
-  phy_ctrl.reset(new phy_controller{phy, task_sched, on_every_cell_selection});
+  phy_ctrl.reset(new phy_controller{phy, task_sched, logger.id(), on_every_cell_selection});
 
   state            = RRC_STATE_IDLE;
   plmn_is_selected = false;
@@ -147,6 +147,7 @@ void rrc::init(phy_interface_rrc_lte* phy_,
   t310 = task_sched.get_unique_timer();
   t311 = task_sched.get_unique_timer();
   t304 = task_sched.get_unique_timer();
+  timer_reset = task_sched.get_unique_timer();
 
   var_rlf_report.init(task_sched);
 
@@ -762,6 +763,11 @@ void rrc::timer_expired(uint32_t timeout_id)
     srsran::console("Timer t304 expired: Handover failed\n");
     logger.info("Timer t304 expired: Handover failed");
     ho_failed();
+  } else if (timeout_id == timer_reset.id()) {
+    srsran::console("Observed initial connection, resetting the stack now...\n");
+    leave_connected();
+    nas->reattach();
+
   } else {
     logger.error("Timeout from unknown timer id %d", timeout_id);
   }
@@ -1179,10 +1185,10 @@ void rrc::leave_connected()
   //    2> enter RRC_IDLE by performing cell selection in accordance with the cell selection process, defined for the
   //       case of leaving RRC_CONNECTED, as specified in TS 36.304 [4];
   logger.info("Going RRC_IDLE");
-  if (phy->cell_is_camping()) {
-    // Receive paging
-    mac->pcch_start_rx();
-  }
+  // if (phy->cell_is_camping()) {
+  //   // Receive paging
+  //   mac->pcch_start_rx();
+  // }
 }
 
 void rrc::stop_timers()
@@ -2636,6 +2642,9 @@ void rrc::handle_con_setup(const rrc_conn_setup_s& setup)
   state = RRC_STATE_CONNECTED;
   t300.stop();
   t302.stop();
+
+  timer_reset.set(1000, [this](uint32_t tid) { timer_expired(tid); });
+  timer_reset.run();
   srsran::console("RRC Connected\n");
 
   // defer transmission of Setup Complete until PHY reconfiguration has been completed
@@ -2649,6 +2658,10 @@ void rrc::handle_con_setup(const rrc_conn_setup_s& setup)
 /* Reception of RRCConnectionReestablishment by the UE 5.3.7.5 */
 void rrc::handle_con_reest(const rrc_conn_reest_s& reest)
 {
+
+  timer_reset.set(1000, [this](uint32_t tid) { timer_expired(tid); });
+  timer_reset.run();
+  
   connection_reest.trigger(reest);
 }
 

@@ -49,14 +49,12 @@ public:
   void reset_cell_nolock();
   bool set_cell_nolock(srsran_cell_t cell_);
   void set_tdd_config_nolock(srsran_tdd_config_t config);
-  void set_config_nolock(const srsran::phy_cfg_t& phy_cfg);
+  void set_config_nolock(const srsran::phy_cfg_t& phy_cfg, int stack_index);
   void upd_config_dci_nolock(const srsran_dci_cfg_t& dci_cfg);
 
   void set_uci_periodic_cqi(srsran_uci_data_t* uci_data);
 
   bool work_dl_regular();
-  bool work_dl_mbsfn(srsran_mbsfn_cfg_t mbsfn_cfg);
-  bool work_ul(srsran_uci_data_t* uci_data);
 
   int read_ce_abs(float* ce_abs, uint32_t tx_antenna, uint32_t rx_antenna);
   int read_pdsch_d(cf_t* pdsch_d);
@@ -73,24 +71,26 @@ private:
                            srsran_dci_ul_t*                       ul_dci,
                            uint32_t                               pid,
                            bool                                   ul_grant_available,
-                           mac_interface_phy_lte::mac_grant_ul_t* mac_grant);
+                           mac_interface_phy_lte::mac_grant_ul_t* mac_grant,
+                           int                                    stack_idx);
 
   /* Methods for DL... */
   int decode_pdcch_ul();
   int decode_pdcch_dl();
 
-  void decode_phich();
   int  decode_pdsch(srsran_pdsch_ack_resource_t            ack_resource,
                     mac_interface_phy_lte::tb_action_dl_t* action,
                     bool                                   acks[SRSRAN_MAX_CODEWORDS]);
   int  decode_pmch(mac_interface_phy_lte::tb_action_dl_t* action, srsran_mbsfn_cfg_t* mbsfn_cfg);
 
   /* Methods for UL */
-  bool     encode_uplink(mac_interface_phy_lte::tb_action_ul_t* action, srsran_uci_data_t* uci_data);
-  void     set_uci_sr(srsran_uci_data_t* uci_data);
+  bool     encode_uplink(mac_interface_phy_lte::tb_action_ul_t* action, srsran_uci_data_t* uci_data, int stack_idx);
+  void     set_uci_sr(srsran_uci_data_t* uci_data, int stack_idx);
   void     set_uci_aperiodic_cqi(srsran_uci_data_t* uci_data);
-  void     set_uci_ack(srsran_uci_data_t* uci_data, bool is_grant_available, uint32_t dai_ul, bool is_pusch_available);
+  void     set_uci_ack(srsran_uci_data_t* uci_data, bool is_grant_available, uint32_t dai_ul, bool is_pusch_available, int stack_idx);
   uint32_t get_wideband_cqi();
+
+  void set_rnti_mapping();
 
   /* Common objects */
   phy_common*           phy = nullptr;
@@ -116,7 +116,16 @@ private:
 
   /* Objects for UL */
   srsran_ue_ul_t     ue_ul     = {};
-  srsran_ue_ul_cfg_t ue_ul_cfg = {};
+  srsran_ue_ul_cfg_t ue_ul_cfg[MULTIUE_MAX_UES] = {};
+
+  std::vector<uint16_t> dl_rntis;
+  std::map<uint16_t, std::vector<int>> rnti_mapping;
+
+  int nof_sim_ues;
+
+  int unassigned_stacks = 0;
+  int rar_stacks = 0;
+  int crnti_stacks = 0;
 };
 
 } // namespace lte

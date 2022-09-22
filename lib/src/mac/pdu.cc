@@ -564,8 +564,8 @@ uint16_t sch_subh::get_c_rnti()
 
 uint64_t sch_subh::get_con_res_id()
 {
-  return le64toh(((uint64_t)payload[5]) | (((uint64_t)payload[4]) << 8) | (((uint64_t)payload[3]) << 16) |
-                 (((uint64_t)payload[2]) << 24) | (((uint64_t)payload[1]) << 32) | (((uint64_t)payload[0]) << 40));
+  return le64toh(((uint64_t)payload[0]) | (((uint64_t)payload[1]) << 8) | (((uint64_t)payload[2]) << 16) |
+                 (((uint64_t)payload[3]) << 24) | (((uint64_t)payload[4]) << 32) | (((uint64_t)payload[5]) << 40));
 }
 
 float sch_subh::get_phr()

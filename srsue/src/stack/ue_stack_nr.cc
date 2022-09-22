@@ -35,7 +35,7 @@ ue_stack_nr::ue_stack_nr() :
   pdcp_logger(srslog::fetch_basic_logger("PDCP-NR", false))
 {
   get_background_workers().set_nof_workers(2);
-  mac.reset(new mac_nr(&task_sched));
+  mac.reset(new mac_nr("MAC-NR", &task_sched));
   pdcp.reset(new srsran::pdcp(&task_sched, "PDCP-NR"));
   rlc.reset(new srsran::rlc("RLC-NR"));
   rrc.reset(new rrc_nr(&task_sched));
@@ -69,7 +69,7 @@ int ue_stack_nr::init(const stack_args_t& args_)
 {
   args = args_;
 
-  mac_logger.set_level(srslog::str_to_basic_level(args.log.mac_level));
+  mac_logger.set_level(srslog::str_to_basic_level("NONE"));
   mac_logger.set_hex_dump_max_size(args.log.mac_hex_limit);
   rlc_logger.set_level(srslog::str_to_basic_level(args.log.rlc_level));
   rlc_logger.set_hex_dump_max_size(args.log.rlc_hex_limit);

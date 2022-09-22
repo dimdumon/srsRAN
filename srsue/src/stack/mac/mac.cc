@@ -369,11 +369,11 @@ void mac::mch_decoded(uint32_t len, bool crc)
   metrics[0].rx_pkts++;
 }
 
-void mac::tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS])
+void mac::tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS], int ra_rnti_counter)
 {
   if (SRSRAN_RNTI_ISRAR(grant.rnti)) {
     if (ack[0]) {
-      ra_procedure.tb_decoded_ok(cc_idx, grant.tti);
+      ra_procedure.tb_decoded_ok(cc_idx, grant.tti, ra_rnti_counter);
     }
   } else if (grant.rnti == SRSRAN_PRNTI) {
     // Send PCH payload to RLC

@@ -22,6 +22,10 @@
 
 namespace srsue {
 
+emm_state_t::emm_state_t(srslog::basic_logger& logger_) :
+  logger(logger_)
+{}
+
 // FSM setters
 void emm_state_t::set_null()
 {

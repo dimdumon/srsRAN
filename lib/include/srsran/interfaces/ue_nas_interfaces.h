@@ -62,6 +62,7 @@ public:
   virtual bool     get_ipv6_addr(uint8_t* ipv6_addr)                                                     = 0;
   virtual void     plmn_search_completed(const found_plmn_t found_plmns[MAX_FOUND_PLMNS], int nof_plmns) = 0;
   virtual bool     connection_request_completed(bool outcome)                                            = 0;
+  virtual void     reattach()                                                                            = 0;
 };
 
 class nas_5g_interface_rrc_nr

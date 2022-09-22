@@ -62,7 +62,7 @@ class ue_stack_lte final : public ue_stack_base,
                            public srsran::thread
 {
 public:
-  explicit ue_stack_lte();
+  explicit ue_stack_lte(srslog::sink& sink, std::string id = "");
   ~ue_stack_lte();
 
   std::string get_type() final;
@@ -111,9 +111,9 @@ public:
     mac.new_grant_dl(cc_idx, grant, action);
   }
 
-  void tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS]) final
+  void tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS], int ra_rnti_counter = 0) final
   {
-    mac.tb_decoded(cc_idx, grant, ack);
+    mac.tb_decoded(cc_idx, grant, ack, ra_rnti_counter);
   }
 
   void bch_decoded_ok(uint32_t cc_idx, uint8_t* payload, uint32_t len) final
@@ -208,6 +208,8 @@ private:
   srslog::basic_logger& rrc_nr_logger;
   srslog::basic_logger& rlc_nr_logger;
   srslog::basic_logger& pdcp_nr_logger;
+
+  std::string stack_id;
 
   // tracing
   srsran::mac_pcap mac_pcap;

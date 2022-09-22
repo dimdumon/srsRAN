@@ -55,13 +55,42 @@ public:
   virtual void set_cfo(float cfo) = 0;
 };
 
+typedef struct {
+  bool            enable;
+  uint32_t        grant_cc_idx;
+  srsran_dci_dl_t dl_dci;
+  int stack_idx;
+} pending_dl_grant_t;
+
+typedef struct {
+  bool            enable;
+  uint32_t        pid;
+  srsran_dci_ul_t dci;
+  int             stack_index; 
+  int stack_idx;
+} pending_ul_grant_t;
+
+typedef struct {
+  bool            hi_value;
+  bool            hi_present;
+  srsran_dci_ul_t dci_ul;
+  int stack_idx;
+} received_ul_ack_t;
+
+typedef struct {
+  bool                 enable;
+  srsran_phich_grant_t phich_grant;
+  srsran_dci_ul_t      dci_ul;
+  int stack_idx;
+} pending_ul_ack_t;
+
 /* Subclass that manages variables common to all workers */
 class phy_common : public srsran::phy_common_interface
 {
 public:
   /* Common variables used by all phy workers */
   phy_args_t*              args  = nullptr;
-  stack_interface_phy_lte* stack = nullptr;
+  std::shared_ptr<std::vector<stack_interface_phy_lte*>> stacks;
 
   srsran::phy_cfg_mbsfn_t mbsfn_config = {};
 
@@ -71,10 +100,10 @@ public:
   scell::state cell_state;
 
   // Save last TBS for uplink (mcs >= 28)
-  srsran_ra_tb_t last_ul_tb[SRSRAN_MAX_HARQ_PROC][SRSRAN_MAX_CARRIERS] = {};
+  srsran_ra_tb_t last_ul_tb[SRSRAN_MAX_HARQ_PROC][SRSRAN_MAX_CARRIERS][MULTIUE_MAX_UES] = {};
 
   // Save last TBS for DL (Format1C)
-  int last_dl_tbs[SRSRAN_MAX_HARQ_PROC][SRSRAN_MAX_CARRIERS][SRSRAN_MAX_CODEWORDS] = {};
+  int last_dl_tbs[SRSRAN_MAX_HARQ_PROC][SRSRAN_MAX_CARRIERS][SRSRAN_MAX_CODEWORDS][MULTIUE_MAX_UES] = {};
 
   srsran::tti_semaphore<void*> semaphore;
 
@@ -84,14 +113,17 @@ public:
   // Last reported RI
   std::atomic<uint32_t> last_ri = {0};
 
+  std::mutex                                        pending_dl_grant_mutex;
+  std::mutex                                        pending_ul_ack_mutex;
+
   phy_common(srslog::basic_logger& logger);
 
   ~phy_common();
 
-  void init(phy_args_t*                  args,
-            srsran::radio_interface_phy* _radio,
-            stack_interface_phy_lte*     _stack,
-            rsrp_insync_itf*             rsrp_insync);
+  void init(phy_args_t*                          args,
+            srsran::radio_interface_phy*         _radio,
+            std::shared_ptr<std::vector<stack_interface_phy_lte*>> _stacks,
+            rsrp_insync_itf*                     rsrp_insync);
 
   uint32_t ul_pidof(uint32_t tti, srsran_tdd_config_t* tdd_config);
 
@@ -100,38 +132,12 @@ public:
   void set_ue_ul_cfg(srsran_ue_ul_cfg_t* ue_ul_cfg);
   void set_pdsch_cfg(srsran_pdsch_cfg_t* pdsch_cfg);
 
-  void set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti, srsran_tdd_config_t tdd_config);
+  void set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti, srsran_tdd_config_t tdd_config, int index);
 
-  void set_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t grant_cc_idx, const srsran_dci_dl_t* dl_dci);
-  bool get_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t* grant_cc_idx, srsran_dci_dl_t* dl_dci);
+  void set_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t grant_cc_idx, const srsran_dci_dl_t* dl_dci, int idx,
+                                      int stack_idx);
 
-  void set_ul_pending_ack(srsran_ul_sf_cfg_t*  sf,
-                          uint32_t             cc_idx,
-                          srsran_phich_grant_t phich_grant,
-                          srsran_dci_ul_t*     dci_ul);
-  bool get_ul_pending_ack(srsran_dl_sf_cfg_t*   sf,
-                          uint32_t              cc_idx,
-                          srsran_phich_grant_t* phich_grant,
-                          srsran_dci_ul_t*      dci_ul);
-  bool is_any_ul_pending_ack();
-
-  bool get_ul_received_ack(srsran_ul_sf_cfg_t* sf, uint32_t cc_idx, bool* ack_value, srsran_dci_ul_t* dci_ul);
-  void set_ul_received_ack(srsran_dl_sf_cfg_t* sf,
-                           uint32_t            cc_idx,
-                           bool                ack_value,
-                           uint32_t            I_phich,
-                           srsran_dci_ul_t*    dci_ul);
-
-  void set_ul_pending_grant(srsran_dl_sf_cfg_t* sf, uint32_t cc_idx, srsran_dci_ul_t* dci);
-  bool get_ul_pending_grant(srsran_ul_sf_cfg_t* sf, uint32_t cc_idx, uint32_t* pid, srsran_dci_ul_t* dci);
-
-  /**
-   * If there is a UL Grant it returns the lowest index component carrier that has a grant, otherwise it returns 0.
-   *
-   * @param tti_tx TTI in which the transmission is happening
-   * @return The number of carrier if a grant is available, otherwise 0
-   */
-  uint32_t get_ul_uci_cc(uint32_t tti_tx) const;
+  bool get_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t* grant_cc_idx, srsran_dci_dl_t* dl_dci, int stack_idx);
 
   void set_rar_grant_tti(uint32_t tti);
 
@@ -316,28 +322,17 @@ private:
 
   int rar_grant_tti = -1;
 
-  typedef struct {
-    bool                 enable;
-    srsran_phich_grant_t phich_grant;
-    srsran_dci_ul_t      dci_ul;
-  } pending_ul_ack_t;
-  srsran::circular_array<pending_ul_ack_t, TTIMOD_SZ> pending_ul_ack[SRSRAN_MAX_CARRIERS][2] = {};
-  std::mutex                                          pending_ul_ack_mutex;
+  srsran::circular_array<pending_ul_ack_t[MULTIUE_MAX_UES], TTIMOD_SZ> pending_ul_ack[SRSRAN_MAX_CARRIERS][2] = {};
+  srsran::circular_array<int, TTIMOD_SZ> pending_ul_ack_size[SRSRAN_MAX_CARRIERS][2] = {};
 
-  typedef struct {
-    bool            hi_value;
-    bool            hi_present;
-    srsran_dci_ul_t dci_ul;
-  } received_ul_ack_t;
-  srsran::circular_array<received_ul_ack_t, TTIMOD_SZ> received_ul_ack[SRSRAN_MAX_CARRIERS] = {};
+
+  srsran::circular_array<received_ul_ack_t[MULTIUE_MAX_UES], TTIMOD_SZ> received_ul_ack[SRSRAN_MAX_CARRIERS] = {};
+  //srsran::circular_array<int, TTIMOD_SZ> received_ul_ack_size[SRSRAN_MAX_CARRIERS] = {};
   std::mutex                                           received_ul_ack_mutex;
 
-  typedef struct {
-    bool            enable;
-    uint32_t        pid;
-    srsran_dci_ul_t dci;
-  } pending_ul_grant_t;
-  srsran::circular_array<pending_ul_grant_t, TTIMOD_SZ> pending_ul_grant[SRSRAN_MAX_CARRIERS] = {};
+
+  srsran::circular_array<pending_ul_grant_t[MULTIUE_MAX_UES], TTIMOD_SZ> pending_ul_grant[SRSRAN_MAX_CARRIERS] = {};
+  //srsran::circular_array<int, TTIMOD_SZ> pending_ul_grant_size[SRSRAN_MAX_CARRIERS] = {};
   mutable std::mutex                                    pending_ul_grant_mutex;
 
   typedef struct {
@@ -348,15 +343,11 @@ private:
   srsran::circular_array<received_ack_t, TTIMOD_SZ> pending_dl_ack[SRSRAN_MAX_CARRIERS] = {};
   srsran::circular_array<uint32_t, TTIMOD_SZ>       pending_dl_dai[SRSRAN_MAX_CARRIERS] = {};
   std::mutex                                        pending_dl_ack_mutex;
-  std::mutex                                        pending_dl_grant_mutex;
 
   // Cross-carried grants scheduled from PCell
-  typedef struct {
-    bool            enable;
-    uint32_t        grant_cc_idx;
-    srsran_dci_dl_t dl_dci;
-  } pending_dl_grant_t;
-  pending_dl_grant_t pending_dl_grant[FDD_HARQ_DELAY_UL_MS][SRSRAN_MAX_CARRIERS] = {};
+  pending_dl_grant_t pending_dl_grant[FDD_HARQ_DELAY_UL_MS][SRSRAN_MAX_CARRIERS][MULTIUE_MAX_UES] = {};
+
+  // int pending_dl_grant_size[FDD_HARQ_DELAY_UL_MS][SRSRAN_MAX_CARRIERS] = {0};
 
   srsran_cell_t cell = {};
 

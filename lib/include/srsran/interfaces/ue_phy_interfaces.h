@@ -38,6 +38,7 @@ namespace srsue {
 struct phy_args_t {
   std::string            type = "lte";
   srsran::phy_log_args_t log;
+  int nof_sim_ues             = 10;
 
   std::string           dl_earfcn      = "3400"; // comma-separated list of DL EARFCNs
   std::string           ul_earfcn      = "";     // comma-separated list of UL EARFCNs

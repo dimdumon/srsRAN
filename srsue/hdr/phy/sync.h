@@ -42,6 +42,7 @@
 #include "srsue/hdr/phy/lte/worker_pool.h"
 #include "srsue/hdr/phy/nr/worker_pool.h"
 #include "sync_state.h"
+#include <vector>
 
 namespace srsue {
 
@@ -64,14 +65,14 @@ public:
     dummy_buffer(sync_nof_rx_subframes){};
   ~sync();
 
-  void init(srsran::radio_interface_phy* radio_,
-            stack_interface_phy_lte*     _stack,
-            prach*                       prach_buffer,
-            lte::worker_pool*            _lte_workers_pool,
-            nr::worker_pool*             _nr_workers_pool,
-            phy_common*                  _worker_com,
-            uint32_t                     prio,
-            int                          sync_cpu_affinity = -1);
+  void init(srsran::radio_interface_phy*         radio_,
+            std::shared_ptr<std::vector<stack_interface_phy_lte*>> _stacks,
+            prach*                               prach_buffer,
+            lte::worker_pool*                    _lte_workers_pool,
+            nr::worker_pool*                     _nr_workers_pool,
+            phy_common*                          _worker_com,
+            uint32_t                             prio,
+            int                                  sync_cpu_affinity = -1);
   void stop();
   void radio_overflow();
 
@@ -218,15 +219,15 @@ private:
   std::mutex                                              intra_freq_cfg_mutex;
 
   // Pointers to other classes
-  stack_interface_phy_lte*     stack = nullptr;
+  std::shared_ptr<std::vector<stack_interface_phy_lte*>>     stacks;
   srslog::basic_logger&        phy_logger;
   srslog::basic_logger&        phy_lib_logger;
-  lte::worker_pool*            lte_worker_pool  = nullptr;
-  nr::worker_pool*             nr_worker_pool   = nullptr;
-  srsran::radio_interface_phy* radio_h          = nullptr;
-  phy_common*                  worker_com       = nullptr;
-  prach*                       prach_buffer     = nullptr;
-  srsran::channel_ptr          channel_emulator = nullptr;
+  lte::worker_pool*            lte_worker_pool    = nullptr;
+  nr::worker_pool*             nr_worker_pool     = nullptr;
+  srsran::radio_interface_phy* radio_h            = nullptr;
+  phy_common*                  worker_com         = nullptr;
+  prach*                       prach_buffer       = nullptr;
+  srsran::channel_ptr          channel_emulator   = nullptr;
 
   // PRACH state
   uint32_t prach_nof_sf = 0;

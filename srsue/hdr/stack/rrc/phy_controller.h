@@ -36,7 +36,7 @@ class phy_controller : public srsran::fsm_t<phy_controller>
   using cell_search_ret_t = rrc_interface_phy_lte::cell_search_ret_t;
 
 public:
-  static const uint32_t wait_sync_timeout_ms = 50;
+  static const uint32_t wait_sync_timeout_ms = 5000;
 
   // events
   struct cell_srch_res {
@@ -57,7 +57,9 @@ public:
 
   explicit phy_controller(phy_interface_rrc_lte*                        phy_,
                           srsran::task_sched_handle                     task_sched_,
-                          std::function<void(uint32_t, uint32_t, bool)> on_cell_selection = {});
+                          std::string                                   logname,
+                          std::function<void(uint32_t, uint32_t, bool)> on_cell_selection = {}
+                          );
 
   // PHY procedures interfaces
   bool start_cell_select(const phy_cell_t& phy_cell, srsran::event_observer<bool> observer = {});

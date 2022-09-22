@@ -31,6 +31,8 @@ namespace srsue {
 class emm_state_t
 {
 public:
+  emm_state_t(srslog::basic_logger& logger_);
+
   enum class state_t {
     null = 0,
     deregistered,
@@ -75,6 +77,7 @@ public:
   void set_registered_initiated();
   void set_tau_initiated();
   void set_service_request_initiated();
+  void set_logger(srslog::basic_logger& logger_);
 
   // FSM getters
   state_t                 get_state() { return state; }
@@ -88,7 +91,7 @@ private:
   state_t                 state                 = state_t::null;
   deregistered_substate_t deregistered_substate = deregistered_substate_t::null;
   registered_substate_t   registered_substate   = registered_substate_t::null;
-  srslog::basic_logger&   logger                = srslog::fetch_basic_logger("NAS");
+  srslog::basic_logger&   logger;//                = srslog::fetch_basic_logger("NAS");
 };
 
 const char* emm_state_text(emm_state_t::state_t type);

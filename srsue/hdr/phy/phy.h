@@ -93,7 +93,9 @@ public:
   int init(const phy_args_t& args_) final;
 
   // Init for LTE PHYs
-  int init(const phy_args_t& args_, stack_interface_phy_lte* stack_, srsran::radio_interface_phy* radio_) final;
+  int init(const phy_args_t& args_, srsran::radio_interface_phy* radio_) final;
+
+  int init(stack_interface_phy_lte* stack_) final;
 
   void stop() final;
 
@@ -108,64 +110,64 @@ public:
 
   /********** RRC INTERFACE ********************/
 
-  bool cell_search() final;
-  bool cell_select(phy_cell_t cell) final;
+  bool cell_search(int index);
+  bool cell_select(phy_cell_t cell, int index);
 
   // Sets the new PHY configuration for the given CC. The configuration is applied in the background. The notify()
   // function will be called when the reconfiguration is completed. Unless the PRACH configuration has changed, the
   // reconfiguration will not take more than 3 ms
-  bool set_config(const srsran::phy_cfg_t& config, uint32_t cc_idx) final;
+  bool set_config(const srsran::phy_cfg_t& config, uint32_t cc_idx, int index);
 
   // Adds or modifies the cell configuration for a given CC. If the EARFCN has changed w.r.t. the previous value, or if
   // the cell is new, this function might take a few hundred ms to complete, depending on the radio
-  bool set_scell(srsran_cell_t cell_info, uint32_t cc_idx, uint32_t earfcn) final;
+  bool set_scell(srsran_cell_t cell_info, uint32_t cc_idx, uint32_t earfcn);
 
   // Applies a TDD configuration in the background. This function will take less than 3 ms to execute.
-  void set_config_tdd(srsran_tdd_config_t& tdd_config) final;
+  void set_config_tdd(srsran_tdd_config_t& tdd_config);
 
   // Todo
-  void set_config_mbsfn_sib2(srsran::mbsfn_sf_cfg_t* cfg_list, uint32_t nof_cfgs) final;
-  void set_config_mbsfn_sib13(const srsran::sib13_t& sib13) final;
-  void set_config_mbsfn_mcch(const srsran::mcch_msg_t& mcch) final;
+  void set_config_mbsfn_sib2(srsran::mbsfn_sf_cfg_t* cfg_list, uint32_t nof_cfgs);
+  void set_config_mbsfn_sib13(const srsran::sib13_t& sib13);
+  void set_config_mbsfn_mcch(const srsran::mcch_msg_t& mcch);
 
   // This function applies the new configuration immediately
-  void set_cells_to_meas(uint32_t earfcn, const std::set<uint32_t>& pci) final;
+  void set_cells_to_meas(uint32_t earfcn, const std::set<uint32_t>& pci);
 
   // This function applies the new configuration immediately
-  void meas_stop() final;
+  void meas_stop();
 
   // also MAC interface
-  bool cell_is_camping() final;
+  bool cell_is_camping();
 
   /********** MAC INTERFACE ********************/
   /* Transmits PRACH in the next opportunity */
-  void         prach_send(uint32_t preamble_idx, int allowed_subframe, float target_power_dbm, float ta_base_sec) final;
-  prach_info_t prach_get_info() final;
+  void         prach_send(uint32_t preamble_idx, int allowed_subframe, float target_power_dbm, float ta_base_sec);
+  phy_interface_mac_lte::prach_info_t prach_get_info();
 
   /* Indicates the transmission of a SR signal in the next opportunity */
-  void sr_send() final;
-  int  sr_last_tx_tti() final;
+  void sr_send();
+  int  sr_last_tx_tti();
 
   // Time advance commands
-  void set_timeadv_rar(uint32_t tti, uint32_t ta_cmd) final;
-  void set_timeadv(uint32_t tti, uint32_t ta_cmd) final;
+  void set_timeadv_rar(uint32_t tti, uint32_t ta_cmd);
+  void set_timeadv(uint32_t tti, uint32_t ta_cmd);
 
   /* Activate / Disactivate SCell*/
-  void deactivate_scells() final;
-  void set_activation_deactivation_scell(uint32_t cmd, uint32_t tti) final;
+  void deactivate_scells();
+  void set_activation_deactivation_scell(uint32_t cmd, uint32_t tti);
 
   /* Sets RAR dci payload */
-  void set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti) final;
+  void set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti, int index);
 
   /*Set MAC->PHY MCH period  stopping point*/
-  void set_mch_period_stop(uint32_t stop) final;
+  void set_mch_period_stop(uint32_t stop);
 
-  float get_phr() final;
-  float get_pathloss_db() final;
+  float get_phr();
+  float get_pathloss_db();
 
-  uint32_t get_current_tti() final;
+  uint32_t get_current_tti();
 
-  void start_plot() final;
+  void start_plot();
 
   const static int MAX_WORKERS     = 4;
   const static int DEFAULT_WORKERS = 4;
@@ -201,10 +203,10 @@ private:
 
   srsran::radio_interface_phy* radio = nullptr;
 
-  srslog::basic_logger&           logger_phy;
-  srslog::basic_logger&           logger_phy_lib;
-  srsue::stack_interface_phy_lte* stack    = nullptr;
-  srsue::stack_interface_phy_nr*  stack_nr = nullptr;
+  srslog::basic_logger&                   logger_phy;
+  srslog::basic_logger&                   logger_phy_lib;
+  std::shared_ptr<std::vector<srsue::stack_interface_phy_lte*>> stacks = std::make_shared<std::vector<srsue::stack_interface_phy_lte*>>();
+  srsue::stack_interface_phy_nr*          stack_nr  = nullptr;
 
   lte::worker_pool lte_workers;
   nr::worker_pool  nr_workers;
@@ -225,9 +227,18 @@ private:
 
   // Tracks the current selected cell (last call to cell_select)
   srsran_cell_t selected_cell = {};
+  phy_cell_t    stored_cell   = {};
 
   static void set_default_args(phy_args_t& args);
   bool        check_args(const phy_args_t& args);
+
+  std::mutex              cell_search_mutex;
+  bool                    cell_search_running = false;
+  std::vector<int>        stacks_doing_cell_search;
+
+  std::mutex              cell_select_mutex;
+  bool                    cell_select_running = false;
+  std::vector<int>        stacks_doing_cell_select;
 };
 
 } // namespace srsue

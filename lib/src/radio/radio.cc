@@ -133,6 +133,7 @@ int radio::init(const rf_args_t& args, phy_interface_radio* phy_)
   if (args.continuous_tx != "auto") {
     continuous_tx = (args.continuous_tx == "yes");
   }
+  tx_adv_ta_usec = args.time_adv_ta_usec;
 
   // Set fixed gain options
   if (args.rx_gain < 0) {
@@ -935,7 +936,7 @@ double radio::get_dev_cal_tx_adv_sec(const std::string& device_name)
   }
 
   // Calculate TX advance in seconds from samples and sampling rate
-  return (double)nsamples / cur_tx_srate;
+  return ((double)nsamples / cur_tx_srate) + (double)((double) tx_adv_ta_usec/ (double) 1e6);
 }
 
 void radio::set_tx_srate(const double& srate)

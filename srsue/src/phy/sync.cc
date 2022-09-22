@@ -55,17 +55,17 @@ static SRSRAN_AGC_CALLBACK(callback_set_rx_gain)
   ((sync*)h)->set_rx_gain(gain_db);
 }
 
-void sync::init(srsran::radio_interface_phy* _radio,
-                stack_interface_phy_lte*     _stack,
-                prach*                       _prach_buffer,
-                lte::worker_pool*            _lte_workers_pool,
-                nr::worker_pool*             _nr_workers_pool,
-                phy_common*                  _worker_com,
-                uint32_t                     prio,
-                int                          sync_cpu_affinity)
+void sync::init(srsran::radio_interface_phy*         _radio,
+                std::shared_ptr<std::vector<stack_interface_phy_lte*>> _stacks,
+                prach*                               _prach_buffer,
+                lte::worker_pool*                    _lte_workers_pool,
+                nr::worker_pool*                     _nr_workers_pool,
+                phy_common*                          _worker_com,
+                uint32_t                             prio,
+                int                                  sync_cpu_affinity)
 {
   radio_h         = _radio;
-  stack           = _stack;
+  stacks          = _stacks;
   lte_worker_pool = _lte_workers_pool;
   nr_worker_pool  = _nr_workers_pool;
   worker_com      = _worker_com;
@@ -198,8 +198,9 @@ void sync::reset()
  */
 bool sync::cell_search_init()
 {
+  Info("cell search init");
   std::unique_lock<std::mutex> ul(rrc_mutex);
-
+  Info("cell search init mutex");
   if (rrc_proc_state != PROC_IDLE) {
     Error("Cell Search: Can't start procedure. SYNC already running a procedure (%d)", (uint32_t)rrc_proc_state);
     return false;
@@ -325,8 +326,9 @@ bool sync::cell_select_init(phy_cell_t new_cell)
 
 bool sync::cell_select_start(phy_cell_t new_cell)
 {
+  Info("CEll select start");
   std::unique_lock<std::mutex> ul(rrc_mutex);
-
+  Info("CEll select start mutex");
   bool ret = false;
   if (rrc_proc_state != PROC_SELECT_START) {
     Error("Cell Select: Can't run procedure. Must call cell_select_init() first (%d)", (uint32_t)rrc_proc_state);
@@ -345,7 +347,7 @@ bool sync::cell_select_start(phy_cell_t new_cell)
     Error("Cell Select: Reconfiguring cell");
     goto clean_exit;
   }
-
+  Info("CEll select start middle");
   /* Select new frequency if necessary */
   if ((int)new_cell.earfcn != current_earfcn) {
     current_earfcn = new_cell.earfcn;
@@ -356,7 +358,7 @@ bool sync::cell_select_start(phy_cell_t new_cell)
       goto clean_exit;
     }
   }
-
+  Info("CEll select start middle2");
   // Reconfigure first intra-frequency measurement
   intra_freq_meas[0]->set_primary_cell(current_earfcn, cell.get());
 
@@ -365,15 +367,15 @@ bool sync::cell_select_start(phy_cell_t new_cell)
   for (auto& e : scell_sync) {
     e.second->set_bw(cell.get().nof_prb);
   }
-
+  Info("CEll select start middle3");
   // Change sampling rate if necessary
   set_sampling_rate();
-
+  Info("CEll select start middle4");
   // SFN synchronization
   phy_state.run_sfn_sync();
   if (phy_state.is_camping()) {
     Info("Cell Select: SFN synchronized. CAMPING...");
-    stack->in_sync();
+    for (auto stack : *stacks) stack->in_sync();
     ret = true;
   } else {
     Info("Cell Select: Could not synchronize SFN");
@@ -415,7 +417,7 @@ void sync::run_cell_search_state()
   cell_search_ret        = search_p.run(&tmp_cell, mib);
   if (cell_search_ret == search::CELL_FOUND) {
     cell.set(tmp_cell);
-    stack->bch_decoded_ok(SYNC_CC_IDX, mib.data(), mib.size() / 8);
+    for (auto stack : *stacks) stack->bch_decoded_ok(SYNC_CC_IDX, mib.data(), mib.size() / 8); // TODO
   }
   phy_state.state_exit();
 }
@@ -433,7 +435,8 @@ void sync::run_sfn_sync_state()
                         "to cells with different MIB is not supported\n");
         phy_state.state_exit(false);
       }
-      stack->in_sync();
+      for (auto stack : *stacks) stack->in_sync();
+      //std::for_each(stacks.begin(), stacks.end(), [](stack_interface_phy_lte* stack){ stack->in_sync(); });
       phy_state.state_exit();
       break;
     case sfn_sync::IDLE:
@@ -517,6 +520,8 @@ void sync::run_camping_in_sync_state(lte::sf_worker*      lte_worker,
       Error("Generating PRACH");
     }
   }
+
+  prach_ptr = nullptr;
 
   lte_worker->set_prach(prach_ptr ? &prach_ptr[prach_sf_cnt * SRSRAN_SF_LEN_PRB(cell.get().nof_prb)] : nullptr,
                         prach_power);
@@ -724,7 +729,7 @@ void sync::in_sync()
   in_sync_cnt++;
   // Send RRC in-sync signal after 100 ms consecutive subframes
   if (in_sync_cnt == worker_com->args->nof_in_sync_events) {
-    stack->in_sync();
+    for (auto stack : *stacks) stack->in_sync();
     in_sync_cnt     = 0;
     out_of_sync_cnt = 0;
   }
@@ -738,7 +743,7 @@ void sync::out_of_sync()
   out_of_sync_cnt++;
   if (out_of_sync_cnt == worker_com->args->nof_out_of_sync_events) {
     Info("Sending to RRC");
-    stack->out_of_sync();
+    for (auto stack : *stacks) stack->out_of_sync();
     out_of_sync_cnt = 0;
     in_sync_cnt     = 0;
   }
@@ -1042,7 +1047,7 @@ void sync::run_stack_tti()
 
     // Run stack
     Debug("run_stack_tti: calling stack tti=%d, tti_jump=%d", tti, tti_jump);
-    stack->run_tti(tti, tti_jump);
+    for (auto stack : *stacks) stack->run_tti(tti, tti_jump);
     Debug("run_stack_tti: stack called");
   }
 
@@ -1119,7 +1124,7 @@ void sync::new_cell_meas(uint32_t cc_idx, const std::vector<phy_meas_t>& meas)
   worker_com->set_neighbour_cells(cc_idx, meas);
 
   // Pass-through to the stack
-  stack->new_cell_meas(meas);
+  for (auto stack : *stacks) stack->new_cell_meas(meas);
 }
 
 } // namespace srsue

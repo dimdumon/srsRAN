@@ -235,7 +235,7 @@ public:
   const static int           MAX_NEIGHBOUR_CELLS = 8;
   typedef std::unique_ptr<T> unique_meas_cell;
 
-  explicit meas_cell_list(srsran::task_sched_handle task_sched_);
+  explicit meas_cell_list(srsran::task_sched_handle task_sched_, std::string logname);
 
   bool             add_meas_cell(const phy_meas_t& meas);
   bool             add_meas_cell(unique_meas_cell cell);
@@ -273,7 +273,7 @@ private:
   bool add_neighbour_cell_unsorted(unique_meas_cell cell);
 
   // args
-  srslog::basic_logger&     logger = srslog::fetch_basic_logger("RRC");
+  srslog::basic_logger&     logger;
   srsran::task_sched_handle task_sched;
 
   unique_meas_cell              serv_cell;

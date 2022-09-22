@@ -61,6 +61,7 @@ struct rf_args_t {
   std::string device_name;
   std::string device_args;
   std::string time_adv_nsamples;
+  float time_adv_ta_usec;
   std::string continuous_tx;
 
   std::array<rf_args_band_t, SRSRAN_MAX_CARRIERS> ch_rx_bands;

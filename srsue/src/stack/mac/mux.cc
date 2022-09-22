@@ -351,8 +351,8 @@ bool mux::msg3_is_transmitted()
 void mux::msg3_prepare()
 {
   std::lock_guard<std::mutex> lock(mutex);
-  msg3_has_been_transmitted = false;
-  msg3_pending              = true;
+  msg3_has_been_transmitted = true;
+  msg3_pending              = false;
 }
 
 bool mux::msg3_is_pending()

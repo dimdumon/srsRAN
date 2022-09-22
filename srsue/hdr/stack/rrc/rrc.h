@@ -63,7 +63,7 @@ class rrc : public rrc_interface_nas,
             public srsran::timer_callback
 {
 public:
-  rrc(stack_interface_rrc* stack_, srsran::task_sched_handle task_sched_);
+  rrc(stack_interface_rrc* stack_, srsran::task_sched_handle task_sched_, std::string id);
   ~rrc();
 
   void init(phy_interface_rrc_lte* phy_,
@@ -201,7 +201,7 @@ private:
   // RRC constants and timers
   uint32_t                            n310_cnt = 0, N310 = 0;
   uint32_t                            n311_cnt = 0, N311 = 0;
-  srsran::timer_handler::unique_timer t300, t301, t302, t310, t311, t304;
+  srsran::timer_handler::unique_timer t300, t301, t302, t310, t311, t304, timer_reset;
 
   static const std::string rb_id_str[];
 

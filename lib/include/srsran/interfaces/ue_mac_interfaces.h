@@ -94,7 +94,7 @@ public:
   virtual void new_grant_dl(uint32_t cc_idx, mac_grant_dl_t grant, tb_action_dl_t* action) = 0;
 
   /* Indicate successful decoding of PDSCH AND PCH TB. */
-  virtual void tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS]) = 0;
+  virtual void tb_decoded(uint32_t cc_idx, mac_grant_dl_t grant, bool ack[SRSRAN_MAX_CODEWORDS], int ra_rnti_counter) = 0;
 
   /* Indicate successful decoding of BCH TB through PBCH */
   virtual void bch_decoded_ok(uint32_t cc_idx, uint8_t* payload, uint32_t len) = 0;

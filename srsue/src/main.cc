@@ -35,6 +35,7 @@
 #include "srsue/hdr/metrics_json.h"
 #include "srsue/hdr/metrics_stdout.h"
 #include "srsue/hdr/ue.h"
+#include "srsue/hdr/phy/phy.h"
 #include <boost/program_options.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <csignal>
@@ -45,6 +46,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "srsran/common/string_helpers.h"
 
 extern std::atomic<bool> simulate_rlf;
 
@@ -58,7 +60,8 @@ namespace bpo = boost::program_options;
 
 static bool              do_metrics     = false;
 static metrics_stdout*   metrics_screen = nullptr;
-static srslog::sink*     log_sink       = nullptr;
+static srslog::sink*     log_sinks[MULTIUE_MAX_UES]       = {};
+// static srslog::sink*     log_sink2      = nullptr;
 static std::atomic<bool> running        = {true};
 
 /**********************************************************************
@@ -81,6 +84,7 @@ static int parse_args(all_args_t* args, int argc, char* argv[])
   common.add_options()
     ("ue.radio", bpo::value<string>(&args->rf.type)->default_value("multi"), "Type of the radio [multi]")
     ("ue.phy", bpo::value<string>(&args->phy.type)->default_value("lte"), "Type of the PHY [lte]")
+    ("ue.nof_sim_ues", bpo::value<int>(&args->phy.nof_sim_ues)->default_value(10), "Number of simulated UEs (maximum 10)")
 
     ("rf.srate",        bpo::value<double>(&args->rf.srate_hz)->default_value(0.0),          "Force Tx and Rx sampling rate in Hz")
     ("rf.freq_offset",  bpo::value<float>(&args->rf.freq_offset)->default_value(0),          "(optional) Frequency offset")
@@ -101,6 +105,7 @@ static int parse_args(all_args_t* args, int argc, char* argv[])
     ("rf.device_name", bpo::value<string>(&args->rf.device_name)->default_value("auto"), "Front-end device name")
     ("rf.device_args", bpo::value<string>(&args->rf.device_args)->default_value("auto"), "Front-end device arguments")
     ("rf.time_adv_nsamples", bpo::value<string>(&args->rf.time_adv_nsamples)->default_value("auto"), "Transmission time advance")
+    ("rf.time_adv_ta_usec", bpo::value<float>(&args->rf.time_adv_ta_usec)->default_value(0), "Transmission time advance in microseconds (TA value)")
     ("rf.continuous_tx", bpo::value<string>(&args->rf.continuous_tx)->default_value("auto"), "Transmit samples continuously to the radio or on bursts (auto/yes/no). Default is auto (yes for UHD, no for rest)")
 
     ("rf.bands.rx[0].min", bpo::value<float>(&args->rf.ch_rx_bands[0].min)->default_value(0), "Lower frequency boundary for CH0-RX")
@@ -632,6 +637,111 @@ static int parse_args(all_args_t* args, int argc, char* argv[])
   return SRSRAN_SUCCESS;
 }
 
+int parse_args_ue(all_args_t& args)
+{
+  // carry out basic sanity checks
+  if (args.stack.rrc.mbms_service_id > -1) {
+    if (!args.phy.interpolate_subframe_enabled) {
+      // logger.error("interpolate_subframe_enabled = %d, While using MBMS, "
+      //              "please set interpolate_subframe_enabled to true",
+      //              args.phy.interpolate_subframe_enabled);
+      return SRSRAN_ERROR;
+    }
+    if (args.phy.nof_phy_threads > 2) {
+      // logger.error("nof_phy_threads = %d, While using MBMS, please set "
+      //              "number of phy threads to 1 or 2",
+      //              args.phy.nof_phy_threads);
+      return SRSRAN_ERROR;
+    }
+    if ((0 == args.phy.snr_estim_alg.find("refs"))) {
+      // logger.error("snr_estim_alg = refs, While using MBMS, please set "
+      //              "algorithm to pss or empty");
+      return SRSRAN_ERROR;
+    }
+  }
+
+  if (args.rf.nof_antennas > SRSRAN_MAX_PORTS) {
+    fprintf(stderr, "Maximum number of antennas exceeded (%d > %d)\n", args.rf.nof_antennas, SRSRAN_MAX_PORTS);
+    return SRSRAN_ERROR;
+  }
+
+  args.rf.nof_carriers = args.phy.nof_lte_carriers + args.phy.nof_nr_carriers;
+
+  if (args.rf.nof_carriers > SRSRAN_MAX_CARRIERS) {
+    fprintf(stderr,
+            "Maximum number of carriers exceeded (%d > %d) (nof_lte_carriers %d + nof_nr_carriers %d)\n",
+            args.rf.nof_carriers,
+            SRSRAN_MAX_CARRIERS,
+            args.phy.nof_lte_carriers,
+            args.phy.nof_nr_carriers);
+    return SRSRAN_ERROR;
+  }
+
+  // replicate some RF parameter to make them available to PHY
+  args.phy.nof_rx_ant = args.rf.nof_antennas;
+  args.phy.agc_enable = args.rf.rx_gain < 0.0f;
+
+  // populate DL EARFCN list
+  if (not args.phy.dl_earfcn.empty()) {
+    // Parse DL-EARFCN list
+    srsran::string_parse_list(args.phy.dl_earfcn, ',', args.phy.dl_earfcn_list);
+
+    // Populates supported bands
+    args.stack.rrc.nof_supported_bands = 0;
+    for (uint32_t& earfcn : args.phy.dl_earfcn_list) {
+      uint8_t band = srsran_band_get_band(earfcn);
+      // Try to find band, if not appends it
+      if (std::find(args.stack.rrc.supported_bands.begin(), args.stack.rrc.supported_bands.end(), band) ==
+          args.stack.rrc.supported_bands.end()) {
+        args.stack.rrc.supported_bands[args.stack.rrc.nof_supported_bands++] = band;
+      }
+      // RRC NR needs also information about supported eutra bands
+      if (std::find(args.stack.rrc_nr.supported_bands_eutra.begin(),
+                    args.stack.rrc_nr.supported_bands_eutra.end(),
+                    band) == args.stack.rrc_nr.supported_bands_eutra.end()) {
+        args.stack.rrc_nr.supported_bands_eutra.push_back(band);
+      }
+    }
+  } else {
+    // logger.error("Error: dl_earfcn list is empty");
+    // srsran::console("Error: dl_earfcn list is empty\n");
+    return SRSRAN_ERROR;
+  }
+
+  // populate UL EARFCN list
+  if (not args.phy.ul_earfcn.empty()) {
+    std::vector<uint32_t> ul_earfcn_list;
+    srsran::string_parse_list(args.phy.ul_earfcn, ',', ul_earfcn_list);
+
+    // For each parsed UL-EARFCN links it to the corresponding DL-EARFCN
+    args.phy.ul_earfcn_map.clear();
+    for (size_t i = 0; i < SRSRAN_MIN(ul_earfcn_list.size(), args.phy.dl_earfcn_list.size()); i++) {
+      args.phy.ul_earfcn_map[args.phy.dl_earfcn_list[i]] = ul_earfcn_list[i];
+    }
+  }
+
+  // populate NR DL ARFCNs
+  if (args.phy.nof_nr_carriers > 0) {
+    if (not args.stack.rrc_nr.supported_bands_nr_str.empty()) {
+      // Populates supported bands
+      srsran::string_parse_list(args.stack.rrc_nr.supported_bands_nr_str, ',', args.stack.rrc_nr.supported_bands_nr);
+      args.stack.rrc.supported_bands_nr = args.stack.rrc_nr.supported_bands_nr;
+    } else {
+      // logger.error("Error: rat.nr.bands list is empty");
+      // srsran::console("Error: rat.nr.bands list is empty\n");
+      return SRSRAN_ERROR;
+    }
+  }
+
+  // Set UE category
+  args.stack.rrc.ue_category = (uint32_t)strtoul(args.stack.rrc.ue_category_str.c_str(), nullptr, 10);
+
+  // Consider Carrier Aggregation support if more than one
+  args.stack.rrc.support_ca = (args.phy.nof_lte_carriers > 1);
+
+  return SRSRAN_SUCCESS;
+}
+
 static void* input_loop(void*)
 {
   string key;
@@ -676,8 +786,10 @@ extern "C" void srsran_dft_exit();
 static void     emergency_cleanup_handler(void* data)
 {
   srslog::flush();
-  if (log_sink) {
-    log_sink->flush();
+  for (int i = 0; i < MULTIUE_MAX_UES; i++) {
+    if (log_sinks[i]) {
+      log_sinks[i]->flush();
+    }
   }
   srsran_dft_exit();
 }
@@ -698,18 +810,23 @@ int main(int argc, char* argv[])
     return err;
   }
 
-  // Setup logging.
-  log_sink = (args.log.filename == "stdout")
-                 ? srslog::create_stdout_sink()
-                 : srslog::create_file_sink(args.log.filename, fixup_log_file_maxsize(args.log.file_max_size));
-  if (!log_sink) {
-    return SRSRAN_ERROR;
+
+  for (int i = 0; i < MULTIUE_MAX_UES; i++) {
+    string filename = args.log.filename;
+    log_sinks[i] = (args.log.filename == "stdout")
+                  ? srslog::create_stdout_sink()
+                  : srslog::create_file_sink(filename.insert(filename.find(".log"), std::to_string(i)), fixup_log_file_maxsize(args.log.file_max_size));
+    if (!log_sinks[i]) {
+      return SRSRAN_ERROR;
+    }
   }
-  srslog::log_channel* chan = srslog::create_log_channel("main_channel", *log_sink);
+  // Setup logging.
+
+  srslog::log_channel* chan = srslog::create_log_channel("main_channel", *log_sinks[0]);
   if (!chan) {
     return SRSRAN_ERROR;
   }
-  srslog::set_default_sink(*log_sink);
+  srslog::set_default_sink(*log_sinks[0]);
 
 #ifdef ENABLE_SRSLOG_EVENT_TRACE
   if (args.general.tracing_enable) {
@@ -723,7 +840,11 @@ int main(int argc, char* argv[])
   srslog::init();
 
   srslog::fetch_basic_logger("ALL").set_level(srslog::basic_levels::warning);
-  srsran::log_args(argc, argv, "UE");
+  // srsran::log_args(argc, argv, "UE");
+  // srsran::log_args(argc, argv, "UE2", *log_sink2);
+  for (int i = 0; i < MULTIUE_MAX_UES; i++) {
+    srsran::log_args(argc, argv, "UE" + std::to_string(i), *log_sinks[i]);
+  }
 
   srsran::check_scaling_governor(args.rf.device_name);
 
@@ -731,25 +852,65 @@ int main(int argc, char* argv[])
     fprintf(stderr, "Failed to `mlockall`: %d", errno);
   }
 
-  // Create UE instance.
-  srsue::ue ue;
-  if (ue.init(args)) {
-    ue.stop();
-    return SRSRAN_SUCCESS;
+  // Validate arguments
+  if (parse_args_ue(args)) {
+    fprintf(stderr, "Error processing arguments. Please check %s for more details.\n", args.log.filename.c_str());
+    return SRSRAN_ERROR;
   }
+
+  std::unique_ptr<srsran::radio> lte_radio = std::unique_ptr<srsran::radio>(new srsran::radio);
+  if (!lte_radio) {
+    fprintf(stderr, "Error creating radio multi instance.\n");
+    return SRSRAN_ERROR;
+  }
+
+  // Create PHY instance
+  std::unique_ptr<srsue::phy> lte_phy = std::unique_ptr<srsue::phy>(new srsue::phy);
+  if (!lte_phy) {
+    fprintf(stderr, "Error creating LTE PHY instance.\n");
+    return SRSRAN_ERROR;
+  }
+
+  // init layers
+  if (lte_radio->init(args.rf, lte_phy.get())) {
+    fprintf(stderr, "Error initializing radio.\n");
+    return SRSRAN_ERROR;
+  }
+
+  // from here onwards do not exit immediately if something goes wrong as sub-layers may already use interfaces
+  if (lte_phy->init(args.phy, lte_radio.get())) {
+    fprintf(stderr, "Error initializing PHY.\n");
+    return SRSRAN_ERROR;
+  }
+
+  std::vector<srsue::ue*> ues;
+  for (int i = 0; i < args.phy.nof_sim_ues; i++) {
+    ues.push_back(new srsue::ue());
+    if (ues[i]->init(args, lte_phy.get(), i, *log_sinks[i])) {
+      ues[i]->stop();
+      return SRSRAN_SUCCESS;
+    }
+  }
+
+  if (lte_phy && !lte_phy->is_initiated()) {
+    fprintf(stdout, "Waiting PHY to initialize ... ");
+    lte_phy->wait_initialize();
+    fprintf(stdout, "done!\n");
+  }
+
 
   srsran::metrics_hub<ue_metrics_t> metricshub;
   metrics_stdout                    _metrics_screen;
 
   metrics_screen = &_metrics_screen;
-  metricshub.init(&ue, args.general.metrics_period_secs);
+  metricshub.init(ues[0], args.general.metrics_period_secs);
   metricshub.add_listener(metrics_screen);
-  metrics_screen->set_ue_handle(&ue);
+  metrics_screen->set_ue_handle(ues[0]);
 
   metrics_csv metrics_file(args.general.metrics_csv_filename, args.general.metrics_csv_append);
   if (args.general.metrics_csv_enable) {
     metricshub.add_listener(&metrics_file);
-    metrics_file.set_ue_handle(&ue);
+    metrics_file.set_ue_handle(ues[0]);
     if (args.general.metrics_csv_flush_period_sec > 0) {
       metrics_file.set_flush_period((uint32_t)args.general.metrics_csv_flush_period_sec);
     }
@@ -764,29 +925,47 @@ int main(int argc, char* argv[])
   srsue::metrics_json json_metrics(json_channel);
   if (args.general.metrics_json_enable) {
     metricshub.add_listener(&json_metrics);
-    json_metrics.set_ue_handle(&ue);
+    json_metrics.set_ue_handle(ues[0]);
   }
 
   pthread_t input;
   pthread_create(&input, nullptr, &input_loop, &args);
 
   cout << "Attaching UE..." << endl;
-  ue.switch_on();
+
+  for (int i = 0; i < args.phy.nof_sim_ues; i++) {
+    ues[i]->switch_on();
+  }
+  // ue.switch_on();
+  // ue2.switch_on();
 
   if (args.gui.enable) {
-    ue.start_plot();
+    ues[0]->start_plot();
   }
 
   while (running) {
     sleep(1);
   }
 
-  ue.switch_off();
+  // ue.switch_off();
+  // ue2.switch_off();
+  for (int i = 0; i < args.phy.nof_sim_ues; i++) {
+    ues[i]->switch_off();
+  }
   pthread_cancel(input);
   pthread_join(input, nullptr);
   metricshub.stop();
   metrics_file.stop();
-  ue.stop();
+  for (int i = 0; i < args.phy.nof_sim_ues; i++) {
+    ues[i]->stop();
+  }
+  // ue.stop();
+  // ue2.stop();
+  
+
+  lte_phy->stop();
+  lte_radio->stop();
+
   cout << "---  exiting  ---" << endl;
 
   return SRSRAN_SUCCESS;

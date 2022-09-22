@@ -72,7 +72,7 @@ int srsran_ue_dl_init(srsran_ue_dl_t* q, cf_t* in_buffer[SRSRAN_MAX_PORTS], uint
 
     bzero(q, sizeof(srsran_ue_dl_t));
 
-    q->pending_ul_dci_count = 0;
+    //q->pending_ul_dci_count = 0;
     q->nof_rx_antennas      = nof_rx_antennas;
     q->mi_auto              = true;
     q->mi_manual_index      = 0;
@@ -185,7 +185,7 @@ int srsran_ue_dl_set_cell(srsran_ue_dl_t* q, srsran_cell_t cell)
   int ret = SRSRAN_ERROR_INVALID_INPUTS;
 
   if (q != NULL && srsran_cell_isvalid(&cell)) {
-    q->pending_ul_dci_count = 0;
+    //q->pending_ul_dci_count = 0;
 
     if (q->cell.id != cell.id || q->cell.nof_prb == 0) {
       if (q->cell.nof_prb != 0) {
@@ -423,6 +423,15 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
 {
   uint32_t nof_dci = 0;
   if (rnti) {
+
+    size_t rnti_ind = 0;
+    for(int i = 0; ; i++) {
+      if (q->pending_ul_dci_msg_rntis[i] == rnti) {
+        rnti_ind = i;
+        break;
+      }
+    }
+
     for (int l = 0; l < search_space->nof_locations; l++) {
       if (nof_dci >= SRSRAN_MAX_DCI_MSG) {
         ERROR("Can't store more DCIs in buffer");
@@ -490,16 +499,10 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
 
           // If found a Format0, save it for later
           if (dci_msg[nof_dci].format == SRSRAN_DCI_FORMAT0) {
-            // If there is space for accumulate another UL DCI dci and it was not detected before, then store it
-            if (q->pending_ul_dci_count < SRSRAN_MAX_DCI_MSG &&
-                !find_dci(q->pending_ul_dci_msg, q->pending_ul_dci_count, &dci_msg[nof_dci])) {
-              srsran_dci_msg_t* pending_ul_dci_msg = &q->pending_ul_dci_msg[q->pending_ul_dci_count];
-              *pending_ul_dci_msg                  = dci_msg[nof_dci];
-              q->pending_ul_dci_count++;
-            }
+            // do nothing
             /* Check if the DCI is duplicated */
           } else if (!find_dci(dci_msg, (uint32_t)nof_dci, &dci_msg[nof_dci]) &&
-                     !find_dci(q->pending_ul_dci_msg, q->pending_ul_dci_count, &dci_msg[nof_dci])) {
+                     !find_dci(q->pending_ul_dci_msgs[rnti_ind], q->pending_ul_dci_counts[rnti_ind], &dci_msg[nof_dci])) {
             // Save message and continue with next location
             if (q->nof_allocated_locations < SRSRAN_MAX_DCI_MSG) {
               q->allocated_locations[q->nof_allocated_locations] = dci_msg[nof_dci].location;
@@ -565,39 +568,84 @@ static int find_dci_ss(srsran_ue_dl_t*            q,
   return dci_blind_search(q, sf, rnti, &search_space, &dci_cfg, dci_msg, cfg->cfg.dci_common_ss);
 }
 
+// /*
+//  * Note: This function does not perform a DCI search. It just copies the Format0 messages from the
+//  * pending_ul_dci_msg buffer found during a call to srsran_ue_dl_find_dl_dci().
+//  * It is assumed that the user called srsran_ue_dl_find_dl_dci() prior to calling this function.
+//  */
+// int srsran_ue_dl_find_ul_dci(srsran_ue_dl_t*     q,
+//                              srsran_dl_sf_cfg_t* sf,
+//                              srsran_ue_dl_cfg_t* dl_cfg,
+//                              uint16_t            rnti,
+//                              srsran_dci_ul_t     dci_ul[SRSRAN_MAX_DCI_MSG])
+// {
+//   srsran_dci_msg_t dci_msg[SRSRAN_MAX_DCI_MSG];
+//   uint32_t         nof_msg = 0;
+
+//   if (rnti) {
+//     // Copy the messages found in the last call to srsran_ue_dl_find_dl_dci()
+//     nof_msg = SRSRAN_MIN(SRSRAN_MAX_DCI_MSG, q->pending_ul_dci_count);
+//     memcpy(dci_msg, q->pending_ul_dci_msg, sizeof(srsran_dci_msg_t) * nof_msg);
+//     q->pending_ul_dci_count = 0;
+
+//     // Unpack DCI messages
+//     for (uint32_t i = 0; i < nof_msg; i++) {
+//       if (srsran_dci_msg_unpack_pusch(&q->cell, sf, &dl_cfg->cfg.dci, &dci_msg[i], &dci_ul[i])) {
+//         ERROR("Unpacking UL DCI");
+//         return SRSRAN_ERROR;
+//       }
+//     }
+
+//     return nof_msg;
+
+//   } else {
+//     return 0;
+//   }
+// }
+
 /*
  * Note: This function does not perform a DCI search. It just copies the Format0 messages from the
  * pending_ul_dci_msg buffer found during a call to srsran_ue_dl_find_dl_dci().
  * It is assumed that the user called srsran_ue_dl_find_dl_dci() prior to calling this function.
  */
-int srsran_ue_dl_find_ul_dci(srsran_ue_dl_t*     q,
+int* srsran_ue_dl_find_ul_dcis(srsran_ue_dl_t*     q,
                              srsran_dl_sf_cfg_t* sf,
                              srsran_ue_dl_cfg_t* dl_cfg,
-                             uint16_t            rnti,
-                             srsran_dci_ul_t     dci_ul[SRSRAN_MAX_DCI_MSG])
+                             uint16_t*            rntis,
+                             uint16_t            rntis_len,
+                             srsran_dci_ul_t     dci_ul[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG])
 {
   srsran_dci_msg_t dci_msg[SRSRAN_MAX_DCI_MSG];
-  uint32_t         nof_msg = 0;
+  int* nof_msg = malloc(sizeof(int) * rntis_len);
 
-  if (rnti) {
-    // Copy the messages found in the last call to srsran_ue_dl_find_dl_dci()
-    nof_msg = SRSRAN_MIN(SRSRAN_MAX_DCI_MSG, q->pending_ul_dci_count);
-    memcpy(dci_msg, q->pending_ul_dci_msg, sizeof(srsran_dci_msg_t) * nof_msg);
-    q->pending_ul_dci_count = 0;
-
-    // Unpack DCI messages
-    for (uint32_t i = 0; i < nof_msg; i++) {
-      if (srsran_dci_msg_unpack_pusch(&q->cell, sf, &dl_cfg->cfg.dci, &dci_msg[i], &dci_ul[i])) {
-        ERROR("Unpacking UL DCI");
-        return SRSRAN_ERROR;
+  for (int j = 0; j < rntis_len; j++) {
+    size_t rnti_ind = 0;
+    for(int i = 0; i < q->max_pending_rntis; i++) {
+      if (q->pending_ul_dci_msg_rntis[i] == rntis[j]) {
+        rnti_ind = i;
+        break;
       }
     }
 
-    return nof_msg;
+    if (q->pending_ul_dci_counts[rnti_ind] > 0) INFO("ul dci trying to find 0x%x count %d ind %ld\n", rntis[j], q->pending_ul_dci_counts[rnti_ind], rnti_ind);
+    // Copy the messages found in the last call to srsran_ue_dl_find_dl_dci()
+    nof_msg[j] = SRSRAN_MIN(SRSRAN_MAX_DCI_MSG, q->pending_ul_dci_counts[rnti_ind]);
+    memcpy(dci_msg, q->pending_ul_dci_msgs[rnti_ind], sizeof(srsran_dci_msg_t) * nof_msg[j]);
+    q->pending_ul_dci_counts[rnti_ind] = 0;
 
-  } else {
-    return 0;
+    // Unpack DCI messages
+    for (uint32_t i = 0; i < nof_msg[j]; i++) {
+      if (srsran_dci_msg_unpack_pusch(&q->cell, sf, &dl_cfg->cfg.dci, &dci_msg[i], &dci_ul[j][i])) {
+        ERROR("Unpacking UL DCI");
+        free(nof_msg);
+        int* err_arr = malloc(sizeof(int));
+        err_arr[0] = SRSRAN_ERROR;
+        return err_arr;
+      }
+    }
   }
+  
+  return nof_msg;
 }
 
 // Blind search for SI/P/RA-RNTI
@@ -661,7 +709,7 @@ int srsran_ue_dl_find_dl_dci(srsran_ue_dl_t*     q,
   srsran_dci_msg_t dci_msg[SRSRAN_MAX_DCI_MSG] = {};
 
   // Reset pending UL grants on each call
-  q->pending_ul_dci_count = 0;
+  q->pending_ul_dci_counts[0] = 0;
 
   // Reset allocated DCI locations
   q->nof_allocated_locations = 0;
@@ -683,6 +731,59 @@ int srsran_ue_dl_find_dl_dci(srsran_ue_dl_t*     q,
     if (srsran_dci_msg_unpack_pdsch(&q->cell, sf, &dl_cfg->cfg.dci, &dci_msg[i], &dci_dl[i])) {
       ERROR("Unpacking DL DCI");
       return SRSRAN_ERROR;
+    }
+  }
+  return nof_msg;
+}
+
+int* srsran_ue_dl_find_dl_dcis(srsran_ue_dl_t*     q,
+                              srsran_dl_sf_cfg_t* sf,
+                              srsran_ue_dl_cfg_t* dl_cfg,
+                              uint16_t*                  rntis,
+                              uint16_t                   rntis_len,
+                              srsran_dci_dl_t           dci_dl[MULTIUE_MAX_UES][SRSRAN_MAX_DCI_MSG])
+{
+  set_mi_value(q, sf, dl_cfg);
+
+  q->max_pending_rntis =          rntis_len;
+  for (size_t j = 0; j < rntis_len; j++) {
+    q->pending_ul_dci_counts[j]    = 0;
+    q->pending_ul_dci_msg_rntis[j] = rntis[j];
+  }
+
+
+  // Reset allocated DCI locations
+  q->nof_allocated_locations = 0;
+
+  int* nof_msg = malloc(sizeof(int) * rntis_len);
+  for (size_t j = 0; j < rntis_len; j++)
+  {
+    srsran_dci_msg_t dci_msg[SRSRAN_MAX_DCI_MSG] = {};
+
+    uint16_t rnti = rntis[j];
+    if (rnti == SRSRAN_SIRNTI || rnti == SRSRAN_PRNTI || SRSRAN_RNTI_ISRAR(rnti)) {
+      nof_msg[j] = find_dl_dci_type_siprarnti(q, sf, dl_cfg, rnti, dci_msg);
+    } else {
+      nof_msg[j] = find_dl_ul_dci_type_crnti(q, sf, dl_cfg, rnti, dci_msg);
+    }
+
+    if (nof_msg[j] < 0) {
+      ERROR("Invalid number of DCI messages\n");
+      free(nof_msg);
+      int* err_arr = malloc(sizeof(int));
+      err_arr[0] = SRSRAN_ERROR;
+      return err_arr;
+    }
+
+    // Unpack DCI messages
+    for (uint32_t i = 0; i < nof_msg[j]; i++) {
+      if (srsran_dci_msg_unpack_pdsch(&q->cell, sf, &dl_cfg->cfg.dci, &dci_msg[i], &dci_dl[j][i])) {
+        ERROR("Unpacking DL DCI");
+        free(nof_msg);
+        int* err_arr = malloc(sizeof(int));
+        err_arr[0] = SRSRAN_ERROR;
+        return err_arr;
+      }
     }
   }
   return nof_msg;

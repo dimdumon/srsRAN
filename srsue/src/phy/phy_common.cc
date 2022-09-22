@@ -49,13 +49,13 @@ phy_common::phy_common(srslog::basic_logger& logger) : logger(logger), ta(logger
 
 phy_common::~phy_common() = default;
 
-void phy_common::init(phy_args_t*                  _args,
-                      srsran::radio_interface_phy* _radio,
-                      stack_interface_phy_lte*     _stack,
-                      rsrp_insync_itf*             _chest_loop)
+void phy_common::init(phy_args_t*                          _args,
+                      srsran::radio_interface_phy*         _radio,
+                      std::shared_ptr<std::vector<stack_interface_phy_lte*>> _stacks,
+                      rsrp_insync_itf*                     _chest_loop)
 {
   radio_h    = _radio;
-  stack      = _stack;
+  stacks     = _stacks;
   args       = _args;
   insync_itf = _chest_loop;
   sr.reset();
@@ -130,7 +130,8 @@ srsran::radio_interface_phy* phy_common::get_radio()
 // Unpack RAR dci as defined in Section 6.2 of 36.213
 void phy_common::set_rar_grant(uint8_t             grant_payload[SRSRAN_RAR_GRANT_LEN],
                                uint16_t            rnti,
-                               srsran_tdd_config_t tdd_config)
+                               srsran_tdd_config_t tdd_config,
+                               int                 index)
 {
 #if MSG3_DELAY_MS < 0
 #error "Error MSG3_DELAY_MS can't be negative"
@@ -167,14 +168,15 @@ void phy_common::set_rar_grant(uint8_t             grant_payload[SRSRAN_RAR_GRAN
 
   // Save Msg3 UL dci
   std::lock_guard<std::mutex> lock(pending_ul_grant_mutex);
-  pending_ul_grant_t&         pending_grant = pending_ul_grant[0][msg3_tx_tti];
+  pending_ul_grant_t&         pending_grant = pending_ul_grant[0][msg3_tx_tti][index];
   if (!pending_grant.enable) {
-    Debug("RAR grant rar_grant=%d, msg3_tti=%d, stored in index=%d", rar_grant_tti, msg3_tx_tti, TTIMOD(msg3_tx_tti));
+    Debug("RAR grant rar_grant=%d, msg3_tti=%d, stored in index=%d stack index %d", rar_grant_tti, msg3_tx_tti, TTIMOD(msg3_tx_tti), index);
     pending_grant.pid    = ul_pidof(msg3_tx_tti, &tdd_config);
     pending_grant.dci    = dci_ul;
     pending_grant.enable = true;
+    pending_grant.stack_index = index;
   } else {
-    Warning("set_rar_grant: sf->tti=%d, cc=%d already in use", msg3_tx_tti, 0);
+    Warning("set_rar_grant: sf->tti=%d, cc=%d already in use in stack %d", msg3_tx_tti, 0, index);
   }
 
   rar_grant_tti = -1;
@@ -252,65 +254,6 @@ uint32_t phy_common::ul_pidof(uint32_t tti, srsran_tdd_config_t* tdd_config)
 #define tti_phich(sf)                                                                                                  \
   (sf->tti + (cell.frame_type == SRSRAN_FDD ? FDD_HARQ_DELAY_UL_MS : k_phich[sf->tdd_config.sf_config][sf->tti % 10]))
 
-// Here SF->TTI is when PUSCH is transmitted
-void phy_common::set_ul_pending_ack(srsran_ul_sf_cfg_t*  sf,
-                                    uint32_t             cc_idx,
-                                    srsran_phich_grant_t phich_grant,
-                                    srsran_dci_ul_t*     dci_ul)
-{
-  // Use a lock here because subframe 4 and 9 of TDD config 0 accept multiple PHICH from multiple frames
-  std::lock_guard<std::mutex> lock(pending_ul_ack_mutex);
-
-  pending_ul_ack_t& pending_ack = pending_ul_ack[cc_idx][phich_grant.I_phich][tti_phich(sf)];
-
-  if (!pending_ack.enable) {
-    pending_ack.dci_ul      = *dci_ul;
-    pending_ack.phich_grant = phich_grant;
-    pending_ack.enable      = true;
-    Debug("Set pending ACK for sf->tti=%d n_dmrs=%d, I_phich=%d, cc_idx=%d",
-          sf->tti,
-          phich_grant.n_dmrs,
-          phich_grant.I_phich,
-          cc_idx);
-  } else {
-    Warning("set_ul_pending_ack: sf->tti=%d, cc=%d already in use", sf->tti, cc_idx);
-  }
-}
-
-// Here SF->TTI is when PHICH is being transmitted so that's DL subframe
-bool phy_common::get_ul_pending_ack(srsran_dl_sf_cfg_t*   sf,
-                                    uint32_t              cc_idx,
-                                    srsran_phich_grant_t* phich_grant,
-                                    srsran_dci_ul_t*      dci_ul)
-{
-  std::lock_guard<std::mutex> lock(pending_ul_ack_mutex);
-  bool                        ret         = false;
-  pending_ul_ack_t&           pending_ack = pending_ul_ack[cc_idx][phich_grant->I_phich][sf->tti];
-  if (pending_ack.enable) {
-    *phich_grant       = pending_ack.phich_grant;
-    *dci_ul            = pending_ack.dci_ul;
-    ret                = true;
-    pending_ack.enable = false;
-    Debug("Get pending ACK for sf->tti=%d n_dmrs=%d, I_phich=%d", sf->tti, phich_grant->n_dmrs, phich_grant->I_phich);
-  }
-  return ret;
-}
-
-bool phy_common::is_any_ul_pending_ack()
-{
-  std::lock_guard<std::mutex> lock(pending_ul_ack_mutex);
-
-  for (const auto& i : pending_ul_ack) {
-    for (const auto& j : i) {
-      if (std::any_of(j.begin(), j.end(), [](const pending_ul_ack_t& ack) { return ack.enable; })) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 // Computes SF->TTI at which PUSCH will be transmitted according to Section 8 of 36.213
 #define tti_pusch_hi(sf)                                                                                               \
   (sf->tti +                                                                                                           \
@@ -325,96 +268,6 @@ bool phy_common::is_any_ul_pending_ack()
                                   : k_pusch[sf->tdd_config.sf_config][sf->tti % 10]) +                                            \
    (FDD_HARQ_DELAY_DL_MS - FDD_HARQ_DELAY_UL_MS))
 
-// SF->TTI is at which Format0 dci is received
-void phy_common::set_ul_pending_grant(srsran_dl_sf_cfg_t* sf, uint32_t cc_idx, srsran_dci_ul_t* dci)
-{
-  std::lock_guard<std::mutex> lock(pending_ul_grant_mutex);
-
-  // Calculate PID for this SF->TTI
-  uint32_t            pid           = ul_pidof(tti_pusch_gr(sf), &sf->tdd_config);
-  pending_ul_grant_t& pending_grant = pending_ul_grant[cc_idx][tti_pusch_gr(sf)];
-
-  if (!pending_grant.enable) {
-    pending_grant.pid    = pid;
-    pending_grant.dci    = *dci;
-    pending_grant.enable = true;
-    Debug("Set ul pending grant for sf->tti=%d current_tti=%d, pid=%d", tti_pusch_gr(sf), sf->tti, pid);
-  } else {
-    Info("set_ul_pending_grant: sf->tti=%d, cc=%d already in use", sf->tti, cc_idx);
-  }
-}
-
-// SF->TTI at which PUSCH should be transmitted
-bool phy_common::get_ul_pending_grant(srsran_ul_sf_cfg_t* sf, uint32_t cc_idx, uint32_t* pid, srsran_dci_ul_t* dci)
-{
-  std::lock_guard<std::mutex> lock(pending_ul_grant_mutex);
-  bool                        ret           = false;
-  pending_ul_grant_t&         pending_grant = pending_ul_grant[cc_idx][sf->tti];
-
-  if (pending_grant.enable) {
-    Debug("Reading grant sf->tti=%d idx=%d", sf->tti, TTIMOD(sf->tti));
-    if (pid) {
-      *pid = pending_grant.pid;
-    }
-    if (dci) {
-      *dci = pending_grant.dci;
-    }
-    pending_grant.enable = false;
-    ret                  = true;
-  }
-
-  return ret;
-}
-
-uint32_t phy_common::get_ul_uci_cc(uint32_t tti_tx) const
-{
-  std::lock_guard<std::mutex> lock(pending_ul_grant_mutex);
-  for (uint32_t cc = 0; cc < args->nof_lte_carriers; cc++) {
-    const pending_ul_grant_t& grant = pending_ul_grant[cc][tti_tx];
-    if (grant.enable) {
-      return cc;
-    }
-  }
-  return 0; // Return Primary cell
-}
-
-// SF->TTI at which PHICH is received
-void phy_common::set_ul_received_ack(srsran_dl_sf_cfg_t* sf,
-                                     uint32_t            cc_idx,
-                                     bool                ack_value,
-                                     uint32_t            I_phich,
-                                     srsran_dci_ul_t*    dci_ul)
-{
-  std::lock_guard<std::mutex> lock(received_ul_ack_mutex);
-  received_ul_ack_t&          received_ack = received_ul_ack[cc_idx][tti_pusch_hi(sf)];
-
-  received_ack.hi_present = true;
-  received_ack.hi_value   = ack_value;
-  received_ack.dci_ul     = *dci_ul;
-  Debug("Set ul received ack for sf->tti=%d, current_tti=%d", tti_pusch_hi(sf), sf->tti);
-}
-
-// SF->TTI at which PUSCH will be transmitted
-bool phy_common::get_ul_received_ack(srsran_ul_sf_cfg_t* sf, uint32_t cc_idx, bool* ack_value, srsran_dci_ul_t* dci_ul)
-{
-  std::lock_guard<std::mutex> lock(received_ul_ack_mutex);
-  bool                        ret          = false;
-  received_ul_ack_t&          received_ack = received_ul_ack[cc_idx][sf->tti];
-
-  if (received_ack.hi_present) {
-    if (ack_value) {
-      *ack_value = received_ack.hi_value;
-    }
-    if (dci_ul) {
-      *dci_ul = received_ack.dci_ul;
-    }
-    Debug("Get ul received ack for current_tti=%d", sf->tti);
-    received_ack.hi_present = false;
-    ret                     = true;
-  }
-
-  return ret;
-}
 
 // SF->TTI at which PDSCH is decoded and ACK generated
 void phy_common::set_dl_pending_ack(srsran_dl_sf_cfg_t*         sf,
@@ -443,36 +296,41 @@ void phy_common::set_rar_grant_tti(uint32_t tti)
 void phy_common::set_dl_pending_grant(uint32_t               tti,
                                       uint32_t               cc_idx,
                                       uint32_t               grant_cc_idx,
-                                      const srsran_dci_dl_t* dl_dci)
+                                      const srsran_dci_dl_t* dl_dci,
+                                      int                    idx,
+                                      int stack_idx)
 {
   std::lock_guard<std::mutex> lock(pending_dl_grant_mutex);
-  if (!pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].enable) {
-    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].dl_dci       = *dl_dci;
-    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].grant_cc_idx = grant_cc_idx;
-    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].enable       = true;
+  if (!pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].enable) {
+    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].dl_dci       = *dl_dci;
+    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].grant_cc_idx = grant_cc_idx;
+    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].enable       = true;
+    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].stack_idx       = stack_idx;
+    // pending_dl_grant_size[tti % FDD_HARQ_DELAY_UL_MS][cc_idx]              = idx + 1;
   } else {
     Info("set_dl_pending_grant: cc=%d already exists", cc_idx);
   }
 }
 
-bool phy_common::get_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t* grant_cc_idx, srsran_dci_dl_t* dl_dci)
+bool phy_common::get_dl_pending_grant(uint32_t tti, uint32_t cc_idx, uint32_t* grant_cc_idx, srsran_dci_dl_t* dl_dci, int stack_idx)
 {
   std::lock_guard<std::mutex> lock(pending_dl_grant_mutex);
-  if (pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].enable) {
+  if (pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].enable) {
     // Read grant
     if (dl_dci) {
-      *dl_dci = pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].dl_dci;
+      *dl_dci = pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].dl_dci;
     }
     if (grant_cc_idx) {
-      *grant_cc_idx = pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].grant_cc_idx;
+      *grant_cc_idx = pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].grant_cc_idx;
     }
     // Reset read flag
-    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx].enable = false;
+    pending_dl_grant[tti % FDD_HARQ_DELAY_UL_MS][cc_idx][stack_idx].enable = false;
     return true;
   } else {
     return false;
   }
 }
+
 
 typedef struct {
   uint32_t M;

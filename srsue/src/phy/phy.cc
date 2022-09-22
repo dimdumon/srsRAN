@@ -99,12 +99,18 @@ bool phy::check_args(const phy_args_t& args_)
   return true;
 }
 
-int phy::init(const phy_args_t& args_, stack_interface_phy_lte* stack_, srsran::radio_interface_phy* radio_)
+int phy::init(const phy_args_t& args_, srsran::radio_interface_phy* radio_)
 {
-  stack = stack_;
   radio = radio_;
 
   init(args_);
+
+  return SRSRAN_SUCCESS;
+}
+
+int phy::init(stack_interface_phy_lte* stack_)
+{
+  stacks->push_back(stack_);
 
   return SRSRAN_SUCCESS;
 }
@@ -146,14 +152,14 @@ void phy::run_thread()
 {
   std::unique_lock<std::mutex> lock(config_mutex);
   prach_buffer.init(SRSRAN_MAX_PRB);
-  common.init(&args, radio, stack, &sfsync);
+  common.init(&args, radio, stacks, &sfsync);
 
   // Initialise workers
   lte_workers.init(&common, WORKERS_THREAD_PRIO);
 
   // Warning this must be initialized after all workers have been added to the pool
   sfsync.init(
-      radio, stack, &prach_buffer, &lte_workers, &nr_workers, &common, SF_RECV_THREAD_PRIO, args.sync_cpu_affinity);
+      radio, stacks, &prach_buffer, &lte_workers, &nr_workers, &common, SF_RECV_THREAD_PRIO, args.sync_cpu_affinity);
 
   is_configured = true;
   config_cond.notify_all();
@@ -170,7 +176,8 @@ void phy::wait_initialize()
 
 bool phy::is_initiated()
 {
-  return is_configured;
+  // check if number of stacks is equal to predefined number -> make this a paramaeter later on!
+  return is_configured; // && stacks->size() == 2;
 }
 
 void phy::stop()
@@ -227,12 +234,18 @@ void phy::get_metrics(const srsran::srsran_rat_t& rat, phy_metrics_t* m)
 
 void phy::set_timeadv_rar(uint32_t tti, uint32_t ta_cmd)
 {
-  common.ta.add_ta_cmd_rar(tti, ta_cmd);
+  /**
+   * Do not apply timing command
+   */
+ //common.ta.add_ta_cmd_rar(tti, ta_cmd);
 }
 
 void phy::set_timeadv(uint32_t tti, uint32_t ta_cmd)
 {
-  common.ta.add_ta_cmd_new(tti, ta_cmd);
+  /**
+   * Do not apply timing command
+   */
+  //common.ta.add_ta_cmd_new(tti, ta_cmd);
 }
 
 void phy::deactivate_scells()
@@ -309,38 +322,72 @@ void phy::meas_stop()
 // This function executes one part of the procedure immediatly and returns to continue in the background.
 // When it returns, the caller thread can expect the PHY to have switched to IDLE and have stopped all DL/UL/PRACH
 // processing.
-bool phy::cell_select(phy_cell_t cell)
+bool phy::cell_select(phy_cell_t cell, int index)
 {
-  sfsync.scell_sync_stop();
-  if (sfsync.cell_select_init(cell)) {
-    // Update PCI before starting the background command to make sure PRACH gets the updated value
-    selected_cell.id = cell.pci;
-
-    // Indicate workers that cell selection is in progress
-    common.cell_is_selecting = true;
-
-    cmd_worker_cell.add_cmd([this, cell]() {
-      // Wait SYNC transitions to IDLE
-      sfsync.wait_idle();
-
-      // Reset worker once SYNC is IDLE to flush any PHY state including measurements, pending ACKs and pending grants
-      reset();
-
-      bool ret = sfsync.cell_select_start(cell);
-      if (ret) {
-        srsran_cell_t sync_cell;
-        sfsync.get_current_cell(&sync_cell);
-        selected_cell = sync_cell;
-      }
-      stack->cell_select_complete(ret);
-
-      // Indicate workers that cell selection has finished
-      common.cell_is_selecting = false;
-
-    });
+  std::lock_guard<std::mutex> select_lock(cell_select_mutex);
+  if (cell_is_camping()) {
+    if (cell.earfcn == stored_cell.earfcn && cell.pci == stored_cell.pci) {
+      stacks->at(index)->cell_select_complete(true);
+    } else {
+      stacks->at(index)->cell_select_complete(false);
+    }
     return true;
+  }
+
+  
+  logger_phy.info("Entering Cell Select procedure2 %d",index);
+  if (cell_select_running && stored_cell.earfcn == cell.earfcn && cell.pci == stored_cell.pci) {
+    stacks_doing_cell_select.push_back(index);
+    return true;
+  } else if (!cell_select_running) {
+    stacks_doing_cell_select.push_back(index);
+    stored_cell = cell;
+
+    logger_phy.info("Cell selection starting");
+
+    sfsync.scell_sync_stop();
+    if (sfsync.cell_select_init(cell)) {
+
+      
+      // Update PCI before starting the background command to make sure PRACH gets the updated value
+      selected_cell.id = cell.pci;
+
+      // Indicate workers that cell selection is in progress
+      common.cell_is_selecting = true;
+
+      cmd_worker_cell.add_cmd([this, cell, index]() {
+        // Wait SYNC transitions to IDLE
+        std::lock_guard<std::mutex> select_lock(cell_select_mutex);
+
+        sfsync.wait_idle();
+
+        // Reset worker once SYNC is IDLE to flush any PHY state including measurements, pending ACKs and pending grants
+        reset();
+
+        bool ret = sfsync.cell_select_start(cell);
+        if (ret) {
+          srsran_cell_t sync_cell;
+          sfsync.get_current_cell(&sync_cell);
+          selected_cell = sync_cell;
+        }
+        for (int stack_idx : stacks_doing_cell_select) {
+          Debug("sending cell select complete to stack %d\n", stack_idx);
+          stacks->at(stack_idx)->cell_select_complete(ret);
+        }
+
+        stacks_doing_cell_select.clear();
+        // Indicate workers that cell selection has finished
+        common.cell_is_selecting = false;
+
+      });
+      logger_phy.info("Cell Selection procedure waiting for it to finish");
+      return true;
+    } else {
+      logger_phy.warning("Could not start Cell Selection procedure");
+      return false;
+    }
   } else {
-    logger_phy.warning("Could not start Cell Selection procedure");
+    logger_phy.warning("Could not start Cell Selection procedure because is in cell select process with different cell");
     return false;
   }
 }
@@ -348,23 +395,53 @@ bool phy::cell_select(phy_cell_t cell)
 // This function executes one part of the procedure immediatly and returns to continue in the background.
 // When it returns, the caller thread can expect the PHY to have switched to IDLE and have stopped all DL/UL/PRACH
 // processing.
-bool phy::cell_search()
+bool phy::cell_search(int index)
 {
-  sfsync.scell_sync_stop();
-  if (sfsync.cell_search_init()) {
-    cmd_worker_cell.add_cmd([this]() {
-      // Wait SYNC transitions to IDLE
-      sfsync.wait_idle();
+  std::lock_guard<std::mutex> lock(cell_search_mutex);
 
-      // Reset worker once SYNC is IDLE to flush any PHY state including measurements, pending ACKs and pending grants
-      reset();
+  logger_phy.info("Entering Cell Search procedure");
+  if (stored_cell.earfcn) {
+    rrc_interface_phy_lte::cell_search_ret_t ret = {};
+    ret.found                                    = rrc_interface_phy_lte::cell_search_ret_t::CELL_FOUND;
+    ret.last_freq                                = rrc_interface_phy_lte::cell_search_ret_t::NO_MORE_FREQS;
 
-      phy_cell_t                               found_cell = {};
-      rrc_interface_phy_lte::cell_search_ret_t ret        = sfsync.cell_search_start(&found_cell);
-      stack->cell_search_complete(ret, found_cell);
-    });
-  } else {
-    logger_phy.warning("Could not start Cell Search procedure");
+    stacks->at(index)->cell_search_complete(ret, stored_cell);
+    Debug("sending cached cell search complete to stack %d\n", index);
+    return true;
+  } // TODO NOT SURE THIS IS CORRECT
+
+
+  
+  logger_phy.info("Entering Cell Search procedure2 %d",index);
+  stacks_doing_cell_search.push_back(index);
+  if (!cell_search_running) {
+
+    cell_search_running = true;
+    sfsync.scell_sync_stop();
+    if (sfsync.cell_search_init()) {
+      cmd_worker_cell.add_cmd([this, index]() {
+
+        std::lock_guard<std::mutex> lock(cell_search_mutex);
+        cell_search_running = false;
+        // Wait SYNC transitions to IDLE
+        sfsync.wait_idle();
+
+        // Reset worker once SYNC is IDLE to flush any PHY state including measurements, pending ACKs and pending grants
+        reset();
+
+        phy_cell_t                               found_cell = {};
+        rrc_interface_phy_lte::cell_search_ret_t ret        = sfsync.cell_search_start(&found_cell);
+        for (int stack_idx : stacks_doing_cell_search) {
+          Debug("sending cell search complete to stack %d\n", stack_idx);
+          stacks->at(stack_idx)->cell_search_complete(ret, found_cell);
+        }
+
+        stacks_doing_cell_search.clear();
+      });
+    } else {
+      cell_search_running = false;
+      logger_phy.warning("Could not start Cell Search procedure");
+    }
   }
   return true;
 }
@@ -387,7 +464,7 @@ float phy::get_pathloss_db()
 
 void phy::prach_send(uint32_t preamble_idx, int allowed_subframe, float target_power_dbm, float ta_base_sec)
 {
-  common.ta.set_base_sec(ta_base_sec);
+  // common.ta.set_base_sec(ta_base_sec);
   common.reset_radio();
   if (!prach_buffer.prepare_to_send(preamble_idx, allowed_subframe, target_power_dbm)) {
     Error("Preparing PRACH to send");
@@ -441,9 +518,9 @@ int phy::sr_last_tx_tti()
   return common.sr.get_last_tx_tti();
 }
 
-void phy::set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti)
+void phy::set_rar_grant(uint8_t grant_payload[SRSRAN_RAR_GRANT_LEN], uint16_t rnti, int index)
 {
-  common.set_rar_grant(grant_payload, rnti, tdd_config);
+  common.set_rar_grant(grant_payload, rnti, tdd_config, index);
 }
 
 // Start GUI
@@ -455,7 +532,7 @@ void phy::start_plot()
   }
 }
 
-bool phy::set_config(const srsran::phy_cfg_t& config_, uint32_t cc_idx)
+bool phy::set_config(const srsran::phy_cfg_t& config_, uint32_t cc_idx, int index)
 {
   if (!is_initiated()) {
     fprintf(stderr, "Error calling set_config(): PHY not initialized\n");
@@ -472,7 +549,7 @@ bool phy::set_config(const srsran::phy_cfg_t& config_, uint32_t cc_idx)
   Info("Setting configuration");
 
   // Apply configurations asynchronously to avoid race conditions
-  cmd_worker.add_cmd([this, config_, cc_idx]() {
+  cmd_worker.add_cmd([this, config_, cc_idx, index]() {
     // The PRACH configuration shall be updated only if:
     // - The new configuration belongs to the primary cell
     // - The PRACH configuration is present
@@ -482,94 +559,95 @@ bool phy::set_config(const srsran::phy_cfg_t& config_, uint32_t cc_idx)
     }
 
     logger_phy.info("Setting new PHY configuration cc_idx=%d...", cc_idx);
-    lte_workers.set_config(cc_idx, config_);
+    lte_workers.set_config(cc_idx, config_, index);
 
     // It is up to the PRACH component to detect whether the cell or the configuration have changed to reconfigure
     configure_prach_params();
-    stack->set_config_complete(true);
+    stacks->at(index)->set_config_complete(true);
   });
   return true;
 }
 
 bool phy::set_scell(srsran_cell_t cell_info, uint32_t cc_idx, uint32_t earfcn)
 {
-  if (!is_initiated()) {
-    fprintf(stderr, "Error calling set_config(): PHY not initialized\n");
-    return false;
-  }
+  // if (!is_initiated()) {
+  //   fprintf(stderr, "Error calling set_config(): PHY not initialized\n");
+  //   return false;
+  // }
 
-  if (cc_idx == 0) {
-    logger_phy.error("Received SCell configuration for invalid cc_idx=0");
-    return false;
-  }
+  // if (cc_idx == 0) {
+  //   logger_phy.error("Received SCell configuration for invalid cc_idx=0");
+  //   return false;
+  // }
 
-  // Check parameters are valid
-  if (cc_idx >= args.nof_lte_carriers) {
-    srsran::console("Received SCell configuration for index %d but there are not enough CC workers available\n",
-                    cc_idx);
-    return false;
-  }
+  // // Check parameters are valid
+  // if (cc_idx >= args.nof_lte_carriers) {
+  //   srsran::console("Received SCell configuration for index %d but there are not enough CC workers available\n",
+  //                   cc_idx);
+  //   return false;
+  // }
 
-  // First of all check validity of parameters
-  if (!srsran_cell_isvalid(&cell_info)) {
-    logger_phy.error("Received SCell configuration for an invalid cell");
-    return false;
-  }
+  // // First of all check validity of parameters
+  // if (!srsran_cell_isvalid(&cell_info)) {
+  //   logger_phy.error("Received SCell configuration for an invalid cell");
+  //   return false;
+  // }
 
-  bool earfcn_is_different = common.cell_state.get_earfcn(cc_idx) != earfcn;
+  // bool earfcn_is_different = common.cell_state.get_earfcn(cc_idx) != earfcn;
 
-  // Set inter-frequency measurement
-  sfsync.set_inter_frequency_measurement(cc_idx, earfcn, cell_info);
+  // // Set inter-frequency measurement
+  // sfsync.set_inter_frequency_measurement(cc_idx, earfcn, cell_info);
 
-  // Reset secondary serving cell state, prevents this component carrier from executing any new PHY processing. It does
-  // not stop any current work
-  common.cell_state.reset(cc_idx);
+  // // Reset secondary serving cell state, prevents this component carrier from executing any new PHY processing. It does
+  // // not stop any current work
+  // common.cell_state.reset(cc_idx);
 
-  // Component carrier index zero should be reserved for PCell
-  // Send configuration to workers
-  cmd_worker.add_cmd([this, cell_info, cc_idx, earfcn, earfcn_is_different]() {
-    logger_phy.info("Setting new SCell configuration cc_idx=%d, earfcn=%d, pci=%d...", cc_idx, earfcn, cell_info.id);
-    for (uint32_t i = 0; i < args.nof_phy_threads; i++) {
-      // set_cell is not protected so run when worker has finished to ensure no PHY processing is done at the time of
-      // cell setting
-      lte::sf_worker* w = lte_workers.wait_worker_id(i);
-      if (w) {
-        // Reset secondary serving cell configuration, this needs to be done when the sf_worker is reserved to prevent
-        // resetting the cell while it is working
-        w->reset_cell_nolock(cc_idx);
+  // // Component carrier index zero should be reserved for PCell
+  // // Send configuration to workers
+  // cmd_worker.add_cmd([this, cell_info, cc_idx, earfcn, earfcn_is_different]() {
+  //   logger_phy.info("Setting new SCell configuration cc_idx=%d, earfcn=%d, pci=%d...", cc_idx, earfcn, cell_info.id);
+  //   for (uint32_t i = 0; i < args.nof_phy_threads; i++) {
+  //     // set_cell is not protected so run when worker has finished to ensure no PHY processing is done at the time of
+  //     // cell setting
+  //     lte::sf_worker* w = lte_workers.wait_worker_id(i);
+  //     if (w) {
+  //       // Reset secondary serving cell configuration, this needs to be done when the sf_worker is reserved to prevent
+  //       // resetting the cell while it is working
+  //       w->reset_cell_nolock(cc_idx);
 
-        // Set the new cell
-        w->set_cell_nolock(cc_idx, cell_info);
+  //       // Set the new cell
+  //       w->set_cell_nolock(cc_idx, cell_info);
 
-        // Release the new worker, it should not start processing until the SCell state is set to configured
-        w->release();
-      }
-    }
+  //       // Release the new worker, it should not start processing until the SCell state is set to configured
+  //       w->release();
+  //     }
+  //   }
 
-    // Reset measurements for the given CC after all workers finished processing and have been configured to ensure the
-    // measurements are not overwritten
-    common.reset_measurements(cc_idx);
+  //   // Reset measurements for the given CC after all workers finished processing and have been configured to ensure the
+  //   // measurements are not overwritten
+  //   common.reset_measurements(cc_idx);
 
-    // Change frequency only if the earfcn was modified
-    if (earfcn_is_different) {
-      double dl_freq = srsran_band_fd(earfcn) * 1e6;
-      double ul_freq = srsran_band_fu(common.get_ul_earfcn(earfcn)) * 1e6;
-      radio->set_rx_freq(cc_idx, dl_freq);
-      radio->set_tx_freq(cc_idx, ul_freq);
-    }
+  //   // Change frequency only if the earfcn was modified
+  //   if (earfcn_is_different) {
+  //     double dl_freq = srsran_band_fd(earfcn) * 1e6;
+  //     double ul_freq = srsran_band_fu(common.get_ul_earfcn(earfcn)) * 1e6;
+  //     radio->set_rx_freq(cc_idx, dl_freq);
+  //     radio->set_tx_freq(cc_idx, ul_freq);
+  //   }
 
-    // Set secondary serving cell synchronization
-    sfsync.scell_sync_set(cc_idx, cell_info);
+  //   // Set secondary serving cell synchronization
+  //   sfsync.scell_sync_set(cc_idx, cell_info);
 
-    logger_phy.info(
-        "Finished setting new SCell configuration cc_idx=%d, earfcn=%d, pci=%d", cc_idx, earfcn, cell_info.id);
+  //   logger_phy.info(
+  //       "Finished setting new SCell configuration cc_idx=%d, earfcn=%d, pci=%d", cc_idx, earfcn, cell_info.id);
 
-    // Configure secondary serving cell, allows this component carrier to execute PHY processing
-    common.cell_state.configure(cc_idx, earfcn, cell_info.id);
+  //   // Configure secondary serving cell, allows this component carrier to execute PHY processing
+  //   common.cell_state.configure(cc_idx, earfcn, cell_info.id);
 
-    stack->set_scell_complete(true);
-  });
-  return true;
+  //   stack->set_scell_complete(true);
+  // });
+  // return true;
+  return false;
 }
 
 void phy::set_config_tdd(srsran_tdd_config_t& tdd_config_)
@@ -619,10 +697,11 @@ void phy::set_config_mbsfn_sib13(const srsran::sib13_t& sib13)
 
 void phy::set_config_mbsfn_mcch(const srsran::mcch_msg_t& mcch)
 {
-  common.mbsfn_config.mcch = mcch;
-  stack->set_mbsfn_config(common.mbsfn_config.mcch.pmch_info_list[0].nof_mbms_session_info);
-  common.set_mch_period_stop(common.mbsfn_config.mcch.pmch_info_list[0].sf_alloc_end);
-  common.set_mcch();
+  // common.mbsfn_config.mcch = mcch;
+  // stack->set_mbsfn_config(common.mbsfn_config.mcch.pmch_info_list[0].nof_mbms_session_info);
+  // common.set_mch_period_stop(common.mbsfn_config.mcch.pmch_info_list[0].sf_alloc_end);
+  // common.set_mcch();
+  // NOT IMPLEMENTED
 }
 
 void phy::set_mch_period_stop(uint32_t stop)

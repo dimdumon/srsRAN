@@ -46,6 +46,18 @@ inline void log_args(int argc, char* argv[], const std::string& service)
   srslog::fetch_basic_logger(service).info("%s", s1.str().c_str());
 }
 
+inline void log_args(int argc, char* argv[], const std::string& service, srslog::sink& sink)
+{
+  std::ostringstream s1;
+  s1 << "Using binary " << argv[0] << " with arguments: ";
+  for (int32_t i = 1; i < argc; i++) {
+    s1 << argv[i] << " ";
+  }
+
+  srslog::fetch_basic_logger(service, sink, false).set_level(srslog::basic_levels::info);
+  srslog::fetch_basic_logger(service).info("%s", s1.str().c_str());
+}
+
 inline void check_scaling_governor(const std::string& device_name)
 {
   if (device_name == "zmq") {

@@ -27,9 +27,9 @@
 
 namespace srsue {
 
-mac_nr::mac_nr(srsran::ext_task_sched_handle task_sched_) :
+mac_nr::mac_nr(const char* logname, srsran::ext_task_sched_handle task_sched_) :
   task_sched(task_sched_),
-  logger(srslog::fetch_basic_logger("MAC-NR")),
+  logger(srslog::fetch_basic_logger(logname)),
   proc_ra(*this, logger),
   proc_sr(logger),
   proc_bsr(logger),
